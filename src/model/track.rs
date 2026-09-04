@@ -45,11 +45,11 @@ impl Track {
         self.id.as_deref().and_then(|id| library.bpm_for(id))
     }
 
-    /// The detected BPM formatted for the list's tempo column (a bare rounded number), if known.
-    /// [`crate::ui::listview::ListView`] draws this leading segment of the right column in a
-    /// tempo-dependent colour.
+    /// The detected BPM formatted for the list's tempo column (a rounded number right-aligned in a
+    /// 3-wide field, so 60-200 BPM all line up), if known. [`crate::ui::listview::ListView`] draws
+    /// this leading segment of the left column in a tempo-dependent colour.
     pub fn bpm_display(&self, library: &Library) -> Option<String> {
-        self.current_bpm(library).map(|bpm| format!("{bpm:.0}"))
+        self.current_bpm(library).map(|bpm| format!("{bpm:>3.0}"))
     }
 
     pub fn from_simplified_track(track: &SimplifiedTrack, album: &FullAlbum) -> Self {
@@ -203,10 +203,12 @@ impl ListItem for Track {
         if left != default {
             Playable::format(&Playable::Track(self.clone()), &left, library)
         } else {
-            // BPM leads so ListView can colour that prefix, then artists - title.
+            // BPM leads so ListView can colour that prefix, then artists - title. Always reserve
+            // the 4-wide gutter (3-wide BPM + space) so titles align whether or not the BPM is
+            // known yet.
             match self.bpm_display(library) {
                 Some(bpm) => format!("{bpm} {self}"),
-                None => format!("{self}"),
+                None => format!("    {self}"),
             }
         }
     }
