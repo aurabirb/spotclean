@@ -91,6 +91,21 @@ with a clean-room beat-tracking pipeline (multi-band SuperFlux onset envelope �
 harmonic-comb autocorrelation → octave resolution). Nothing is sent to any
 third-party service.
 
+A background worker also walks the rest of your Liked Songs, one track every
+`bpm_scan_min_interval_secs` (default 15), so left running it fills in the whole
+library. The track you're **playing** jumps the queue and is analysed from the
+audio cache playback is already filling — never a competing CDN fetch. Turn the
+background walk off with `:togglebpmscan` (<kbd>Shift</kbd>+<kbd>t</kbd>) when
+you'd rather spend the rate limit on playback; the playing track is still
+analysed.
+
+Set `bpm_scan_cache_full = true` to have the walk fetch each track in full at
+your configured `bitrate` and leave it in librespot's cache, gradually making
+your library available offline. This is a whole-library download (many GB) and
+much more likely to trip Spotify's rate limiter — raise
+`bpm_scan_min_interval_secs` and cap `audio_cache_size` if you use it. See
+[`doc/users.md`](doc/users.md#configuration) for every `bpm_scan_*` option.
+
 ### Exploring the estimator
 
 `src/bpm.rs` also keeps the original, much simpler estimator as `baseline_bpm`
@@ -127,7 +142,7 @@ your `PATH`.
 **macOS** (Homebrew):
 
 ```sh
-brew install pkg-config portaudio
+brew install pkg-config
 ```
 
 **Linux** — install the dev headers for dbus, pulseaudio, ncurses, openssl and
@@ -152,8 +167,16 @@ cd spotclean
 cargo install --path . --locked
 ```
 
+**macOS** — the default features (`pulseaudio_backend`, `mpris`, `notify`) don't
+build on macOS. Use the CoreAudio backend instead:
+
+```sh
+cargo install --path . --locked --no-default-features --features rodio_backend,pancurses_backend
+```
+
 This puts the `ncspot` binary in `~/.cargo/bin`. To just run it from the source
-tree without installing, use `cargo run --release` in place of the steps below.
+tree without installing, use `cargo run --release` (add the same
+`--no-default-features --features …` flags on macOS) in place of the steps below.
 
 ### 4. Run
 
