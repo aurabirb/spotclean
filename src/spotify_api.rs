@@ -1,10 +1,10 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::application::ASYNC_RUNTIME;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use rspotify::http::HttpError;
 use rspotify::model::{
     AlbumId, AlbumType, ArtistId, CursorBasedPage, EpisodeId, FullAlbum, FullArtist, FullEpisode,
@@ -26,6 +26,68 @@ use crate::model::track::Track;
 use crate::spotify_worker::WorkerCommand;
 use crate::ui::pagination::{ApiPage, ApiResult};
 
+/// Smallest gap enforced between two Web API requests. Spotify rate-limits per app+user over a
+/// rolling window; the parallel library-sync threads otherwise burst straight through it.
+const API_MIN_INTERVAL: Duration = Duration::from_millis(200);
+/// Backoff to use for a `429` that carries no (usable) `Retry-After` header, and the per-attempt
+/// step added on repeated `429`s.
+const API_BACKOFF_STEP: Duration = Duration::from_secs(3);
+/// How many times a single call is retried through rate-limit / auth hiccups before giving up.
+const API_MAX_ATTEMPTS: u32 = 6;
+
+/// Process-wide pacing for all Web API calls: a minimum spacing between requests plus a shared
+/// cool-down that every caller honours after any request is rate-limited.
+#[derive(Clone)]
+struct RateGate {
+    last_request: Arc<Mutex<Instant>>,
+    cooldown_until: Arc<Mutex<Option<Instant>>>,
+}
+
+impl Default for RateGate {
+    fn default() -> Self {
+        Self {
+            last_request: Arc::new(Mutex::new(Instant::now() - API_MIN_INTERVAL)),
+            cooldown_until: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+impl RateGate {
+    /// Block until it's this caller's turn: wait out any active cool-down, then the min interval
+    /// since the previous request. Serialised, so N sync threads leave the gate one at a time.
+    fn wait_turn(&self) {
+        loop {
+            let until = *self.cooldown_until.lock().unwrap();
+            match until {
+                Some(t) => match t.checked_duration_since(Instant::now()) {
+                    Some(remaining) => thread::sleep(remaining.min(Duration::from_secs(2))),
+                    None => {
+                        *self.cooldown_until.lock().unwrap() = None;
+                        break;
+                    }
+                },
+                None => break,
+            }
+        }
+
+        let mut last = self.last_request.lock().unwrap();
+        let elapsed = last.elapsed();
+        if elapsed < API_MIN_INTERVAL {
+            thread::sleep(API_MIN_INTERVAL - elapsed);
+        }
+        *last = Instant::now();
+    }
+
+    /// Make every caller back off for at least `wait`.
+    fn set_cooldown(&self, wait: Duration) {
+        let until = Instant::now() + wait;
+        let mut slot = self.cooldown_until.lock().unwrap();
+        if slot.is_none_or(|current| current < until) {
+            *slot = Some(until);
+        }
+    }
+}
+
 /// Convenient wrapper around the rspotify web API functionality.
 #[derive(Clone)]
 pub struct WebApi {
@@ -37,6 +99,8 @@ pub struct WebApi {
     worker_channel: Arc<RwLock<Option<mpsc::UnboundedSender<WorkerCommand>>>>,
     /// Time at which the token expires.
     token_expiration: Arc<RwLock<DateTime<Utc>>>,
+    /// Process-wide request pacing, shared by every clone of this handle.
+    gate: RateGate,
 }
 
 impl Default for WebApi {
@@ -55,6 +119,7 @@ impl Default for WebApi {
             user: None,
             worker_channel: Arc::new(RwLock::new(None)),
             token_expiration: Arc::new(RwLock::new(Utc::now())),
+            gate: RateGate::default(),
         }
     }
 }
@@ -111,44 +176,62 @@ impl WebApi {
         }))
     }
 
-    /// Execute `api_call` and retry once if a rate limit occurs.
+    /// Execute `api_call`, pacing it through the shared [`RateGate`] and retrying through
+    /// rate-limit (`429`) and token-expiry (`401`) responses up to [`API_MAX_ATTEMPTS`] times.
+    ///
+    /// A `429` puts *every* caller into a cool-down for the `Retry-After` the response asks for
+    /// (or [`API_BACKOFF_STEP`], escalating per attempt, if it doesn't say), so the parallel
+    /// library-sync threads all pause together instead of hammering through the limit one by one.
     fn api_with_retry<F, R>(&self, api_call: F) -> Option<R>
     where
         F: Fn(&AuthCodeSpotify) -> ClientResult<R>,
     {
-        let result = { api_call(&self.api) };
-        match result {
-            Ok(v) => Some(v),
-            Err(ClientError::Http(error)) => {
-                debug!("http error: {error:?}");
-                match error.as_ref() {
-                    HttpError::StatusCode(response) => match response.status() {
-                        429 => {
-                            let waiting_duration = response
-                                .header("Retry-After")
-                                .and_then(|v| v.parse::<u64>().ok());
-                            debug!("rate limit hit. waiting {waiting_duration:?} seconds");
-                            thread::sleep(Duration::from_secs(waiting_duration.unwrap_or(0)));
-                            api_call(&self.api).ok()
-                        }
-                        401 => {
-                            debug!("token unauthorized. trying refresh..");
-                            self.update_token()
-                                .and_then(move |_| api_call(&self.api).ok())
-                        }
-                        _ => {
-                            error!("unhandled api error: {response:?}");
-                            None
-                        }
-                    },
-                    _ => None,
+        for attempt in 0..API_MAX_ATTEMPTS {
+            self.gate.wait_turn();
+
+            let error = match api_call(&self.api) {
+                Ok(v) => return Some(v),
+                Err(ClientError::Http(error)) => error,
+                Err(e) => {
+                    error!("unhandled api error: {e}");
+                    return None;
+                }
+            };
+
+            debug!("http error: {error:?}");
+            let HttpError::StatusCode(response) = error.as_ref() else {
+                return None;
+            };
+
+            match response.status() {
+                429 => {
+                    let wait = response
+                        .header("Retry-After")
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .map(Duration::from_secs)
+                        .unwrap_or(API_BACKOFF_STEP)
+                        .max(API_BACKOFF_STEP * (attempt + 1));
+                    warn!(
+                        "web api rate limited, backing off {}s (attempt {}/{API_MAX_ATTEMPTS})",
+                        wait.as_secs(),
+                        attempt + 1,
+                    );
+                    self.gate.set_cooldown(wait);
+                }
+                401 => {
+                    debug!("token unauthorized; refreshing");
+                    self.update_token();
+                    thread::sleep(Duration::from_millis(500));
+                }
+                other => {
+                    error!("unhandled api error {other}: {response:?}");
+                    return None;
                 }
             }
-            Err(e) => {
-                error!("unhandled api error: {e}");
-                None
-            }
         }
+
+        warn!("web api call gave up after {API_MAX_ATTEMPTS} rate-limited attempts");
+        None
     }
 
     /// Append `tracks` at `position` in the playlist with `playlist_id`.

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::fs::File;
+use std::fs::{self, File};
+use std::io::BufWriter;
 use std::iter::Iterator;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -244,11 +245,21 @@ impl Library {
     }
 
     /// Save the items from `store` in the file at `cache_path`.
+    ///
+    /// Written to a sibling `.tmp` file and renamed into place, so an interrupted or racing write
+    /// can never leave a half-serialized cache behind - a truncated cache parses as empty and
+    /// forces a full (rate-limit-tripping) re-sync on the next start.
     fn save_cache<T: Serialize>(&self, cache_path: &Path, store: &[T]) {
-        let cache_file = File::create(cache_path).unwrap();
-        let serialize_result = serde_json::to_writer(cache_file, store);
-        if let Err(message) = serialize_result {
-            error!("could not write cache: {message:?}");
+        let tmp_path = cache_path.with_extension("tmp");
+        let result = File::create(&tmp_path)
+            .map_err(|e| e.to_string())
+            .and_then(|file| {
+                serde_json::to_writer(BufWriter::new(file), store).map_err(|e| e.to_string())
+            })
+            .and_then(|()| fs::rename(&tmp_path, cache_path).map_err(|e| e.to_string()));
+        if let Err(message) = result {
+            error!("could not write cache {}: {message}", cache_path.display());
+            let _ = fs::remove_file(&tmp_path);
         }
     }
 
