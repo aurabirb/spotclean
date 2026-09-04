@@ -112,7 +112,8 @@ pub fn create_credentials() -> Result<RespotCredentials, String> {
         SPOTIFY_CLIENT_ID,
         &get_client_redirect_uri(),
         OAUTH_SCOPES.to_vec(),
-    );
+    )
+    .open_in_browser();
     let oauth_client = client_builder.build().map_err(|e| e.to_string())?;
 
     oauth_client
@@ -144,7 +145,8 @@ pub fn get_rspotify_token() -> Result<rspotify::Token, String> {
                 NCSPOT_CLIENT_ID,
                 &get_client_redirect_uri(),
                 NCSPOT_OAUTH_SCOPES.to_vec(),
-            );
+            )
+            .open_in_browser();
             if let Ok(oauth_client) = client_builder.build() {
                 match oauth_client.refresh_token(refresh_token) {
                     Ok(new_token) => {
@@ -174,7 +176,8 @@ pub fn create_rspotify_token() -> Result<rspotify::Token, String> {
         NCSPOT_CLIENT_ID,
         &get_client_redirect_uri(),
         NCSPOT_OAUTH_SCOPES.to_vec(),
-    );
+    )
+    .open_in_browser();
     let oauth_client = client_builder.build().map_err(|e| e.to_string())?;
 
     oauth_client
