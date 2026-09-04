@@ -66,6 +66,9 @@ pub struct ListView<I: ListItem> {
     library: Arc<Library>,
     pagination: Pagination<I>,
     title: String,
+    /// A row count to size the scrollbar against when the real list is only partially loaded (0
+    /// = use the loaded length). See [`ListView::set_virtual_len`].
+    virtual_len: usize,
     /// Whether the "currently playing" highlight matches by track identity alone (see
     /// [`ListView::with_match_playing_by_id`]), instead of requiring this row's index to also
     /// equal [`Queue::get_current_index`].
@@ -97,6 +100,7 @@ impl<I: ListItem + Clone> ListView<I> {
             library,
             pagination: Pagination::default(),
             title: "".to_string(),
+            virtual_len: 0,
             match_playing_by_id: false,
         };
         result.try_paginate();
@@ -123,6 +127,12 @@ impl<I: ListItem + Clone> ListView<I> {
 
     pub fn get_pagination(&self) -> &Pagination<I> {
         &self.pagination
+    }
+
+    /// Size the scrollbar as if the list had `n` rows even though fewer are loaded, so a list
+    /// being paged in still shows a true-scale scrollbar. `0` reverts to the loaded length.
+    pub fn set_virtual_len(&mut self, n: usize) {
+        self.virtual_len = n;
     }
 
     /// Return the current amount of items in `content`
@@ -513,15 +523,18 @@ impl<I: ListItem + Clone> View for ListView<I> {
     fn layout(&mut self, size: Vec2) {
         self.last_size = size;
 
-        let relayout_scroller = self.content_len(false) != self.last_content_len;
-        self.last_content_len = self.content_len(true);
+        // Height the scrollbar is sized against: the loaded rows, or a larger known total for a
+        // list still being paged in (see [`ListView::set_virtual_len`]).
+        let scroll_len = self.content_len(true).max(self.virtual_len);
+        let relayout_scroller = scroll_len != self.last_content_len;
+        self.last_content_len = scroll_len;
 
         scroll::layout(
             self,
             size,
             relayout_scroller,
             |_, _| {},
-            |s, c| Vec2::new(c.x, s.content_len(true)),
+            move |_, c| Vec2::new(c.x, scroll_len),
         );
     }
 

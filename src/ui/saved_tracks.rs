@@ -150,6 +150,14 @@ impl ViewWrapper for SavedTracksView {
     wrap_impl!(self.list: ListView<Track>);
 
     fn wrap_layout(&mut self, size: Vec2) {
+        // Size the scrollbar against the full liked-songs count while the list is still paging in
+        // (only when not filtering, where the visible count is genuinely smaller).
+        let virtual_len = if self.hide_sorted {
+            0
+        } else {
+            self.library.saved_tracks_total().unwrap_or(0)
+        };
+        self.list.set_virtual_len(virtual_len);
         self.list.layout(size);
         self.sync();
         self.notify_selected();

@@ -183,6 +183,11 @@ impl Library {
         self.liked.ensure_through(want);
     }
 
+    /// Total liked songs the API reports, if known - may exceed the number loaded so far.
+    pub fn saved_tracks_total(&self) -> Option<usize> {
+        self.liked.total()
+    }
+
     /// Names (lowercased) of playlists that currently have a key bound to them.
     pub fn bound_playlist_names(&self) -> HashSet<String> {
         self.sort.bound_playlist_names()
