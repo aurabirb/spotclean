@@ -315,6 +315,13 @@ impl CommandManager {
                 s.add_layer(dialog);
                 Ok(None)
             }
+            Command::ToggleBpmScan => {
+                let enabled = self.library.toggle_bpm_scan();
+                Ok(Some(format!(
+                    "BPM scanning {}",
+                    if enabled { "enabled" } else { "disabled" }
+                )))
+            }
             Command::SaveCurrent => {
                 if let Some(mut track) = self.queue.get_current() {
                     track.save(&self.library);

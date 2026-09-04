@@ -68,6 +68,7 @@ pub(crate) fn fork_keybindings() -> HashMap<String, Vec<Command>> {
     );
     kb.insert("`".into(), vec![Command::BindKey]);
     kb.insert("'".into(), vec![Command::ToggleSortFilter]);
+    kb.insert("Shift+t".into(), vec![Command::ToggleBpmScan]);
     kb.insert(
         "Shift+Right".into(),
         vec![Command::Seek(SeekDirection::Relative(10000))],

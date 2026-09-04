@@ -77,22 +77,55 @@ const WIN_HOP_SECONDS: f32 = 4.0;
 /// How many harmonics of a candidate period the comb filter sums over.
 const COMB_HARMONICS: usize = 4;
 
-/// Detect `track`'s BPM from its audio, rounded to the nearest whole BPM. Returns `None` if the
-/// track can't be resolved or fetched, or if the estimate comes out implausible. Blocking and
-/// moderately CPU-heavy (a Vorbis decode of ~1 minute of audio plus a batch of FFTs) - call it
-/// from a background worker, never the UI thread.
-pub fn detect_bpm(session: &Session, track: &Track) -> Option<f32> {
-    let uri = SpotifyUri::from_uri(&track.uri).ok()?;
-    let runtime = ASYNC_RUNTIME.get()?;
+/// The result of a BPM detection attempt.
+pub enum BpmOutcome {
+    /// A confident estimate, rounded to the nearest whole BPM.
+    Detected(f32),
+    /// The audio was fetched and analyzed but no plausible tempo came out. Re-running the same
+    /// analysis won't help - the caller should stop trying this track.
+    Indeterminate,
+    /// The audio couldn't be obtained or decoded: no session, nothing in the audio cache when
+    /// `require_cached` was set, a CDN error, or a truncated stream. Transient - worth another
+    /// try once the cache has filled or the rate limit has passed.
+    Unavailable,
+}
 
-    let (source, length) = runtime.block_on(open_audio_stream(session, uri))?;
+/// Detect `track`'s BPM from its audio. Blocking and moderately CPU-heavy (a Vorbis decode of
+/// ~1 minute of audio plus a batch of FFTs) - call it from a background worker, never the UI
+/// thread.
+///
+/// With `require_cached` set, the analysis only runs when one of the track's Ogg files is
+/// already in librespot's on-disk audio cache; otherwise it returns [`BpmOutcome::Unavailable`]
+/// rather than pulling the bytes from the CDN. Use it for the track that's currently playing:
+/// playback is filling that cache anyway, and a competing CDN fetch can be rate-limited into a
+/// stall.
+pub fn detect_bpm(session: &Session, track: &Track, require_cached: bool) -> BpmOutcome {
+    let Ok(uri) = SpotifyUri::from_uri(&track.uri) else {
+        return BpmOutcome::Unavailable;
+    };
+    let Some(runtime) = ASYNC_RUNTIME.get() else {
+        return BpmOutcome::Unavailable;
+    };
+
+    let Some((source, length)) =
+        runtime.block_on(open_audio_stream(session, uri, require_cached))
+    else {
+        return BpmOutcome::Unavailable;
+    };
     // `Subfile` seeks to the offset on construction, skipping Spotify's custom Ogg header so
     // symphonia sees a clean Vorbis stream.
-    let subfile = Subfile::new(source, SPOTIFY_OGG_HEADER_END, length).ok()?;
+    let Ok(subfile) = Subfile::new(source, SPOTIFY_OGG_HEADER_END, length) else {
+        return BpmOutcome::Unavailable;
+    };
 
-    let mono = decode_mono(subfile)?;
+    let Some(mono) = decode_mono(subfile) else {
+        return BpmOutcome::Unavailable;
+    };
     let onset = onset_envelope(&mono);
-    estimate_tempo(&onset)
+    match estimate_tempo(&onset) {
+        Some(bpm) => BpmOutcome::Detected(bpm),
+        None => BpmOutcome::Indeterminate,
+    }
 }
 
 // --- Spotify audio retrieval -------------------------------------------------------------------
@@ -109,6 +142,7 @@ const OGG_FORMATS: [AudioFileFormat; 3] = [
 async fn open_audio_stream(
     session: &Session,
     uri: SpotifyUri,
+    require_cached: bool,
 ) -> Option<(AudioDecrypt<AudioFile>, u64)> {
     // The audio key is requested for the *original* track id even when playback falls back to an
     // alternative (region-relinked) file - same as librespot.
@@ -127,13 +161,18 @@ async fn open_audio_stream(
             .filter_map(|f| audio_item.files.get(f).map(|id| (*f, *id)))
     };
     let cache = session.cache();
-    let (format, file_id) = available()
-        .find(|(_, id)| {
-            cache
-                .and_then(|c| c.file_path(*id))
-                .is_some_and(|p| p.exists())
-        })
-        .or_else(|| available().next())?;
+    let cached = available().find(|(_, id)| {
+        cache
+            .and_then(|c| c.file_path(*id))
+            .is_some_and(|p| p.exists())
+    });
+    let (format, file_id) = match cached {
+        Some(hit) => hit,
+        // Nothing cached: for the playing track we wait for playback to fill the cache rather
+        // than race it to the CDN; otherwise fall back to the smallest file to keep it light.
+        None if require_cached => return None,
+        None => available().next()?,
+    };
 
     let bytes_per_second = stream_data_rate(format);
     let encrypted = AudioFile::open(session, file_id, bytes_per_second)

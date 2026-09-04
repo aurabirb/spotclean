@@ -173,6 +173,17 @@ impl Library {
         }
     }
 
+    /// Whether the background BPM walk is currently running - see [`crate::bpm_scanner`].
+    pub fn bpm_scan_enabled(&self) -> bool {
+        self.bpm.is_enabled()
+    }
+
+    /// Turn the background BPM walk on or off. Returns the new state. The playing track is still
+    /// analyzed either way, since its audio is already being downloaded for playback.
+    pub fn toggle_bpm_scan(&self) -> bool {
+        self.bpm.toggle_enabled()
+    }
+
     /// Current version counter for `saved_tracks`; changes whenever the list is mutated.
     pub fn saved_tracks_version(&self) -> u64 {
         self.liked.version()

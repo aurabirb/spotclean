@@ -155,6 +155,7 @@ pub enum Command {
     RemoveFromPlaylists,
     BindKey,
     ToggleSortFilter,
+    ToggleBpmScan,
     Sort(SortKey, SortDirection),
     Logout,
     ShowRecommendations(TargetMode),
@@ -222,6 +223,7 @@ impl fmt::Display for Command {
             | Self::BindKey
             | Self::RemoveFromPlaylists
             | Self::ToggleSortFilter
+            | Self::ToggleBpmScan
             | Self::Delete
             | Self::Back
             | Self::Help
@@ -256,6 +258,7 @@ impl Command {
             Self::AddCurrent => "add current",
             Self::BindKey => "bindkey",
             Self::ToggleSortFilter => "togglesortfilter",
+            Self::ToggleBpmScan => "togglebpmscan",
             Self::Delete => "delete",
             Self::Focus(_) => "focus",
             Self::Seek(_) => "seek",
@@ -437,6 +440,7 @@ pub fn parse(input: &str) -> Result<Vec<Command>, CommandParseError> {
                 "delete" => Command::Delete,
                 "bindkey" => Command::BindKey,
                 "togglesortfilter" => Command::ToggleSortFilter,
+                "togglebpmscan" => Command::ToggleBpmScan,
                 "focus" => {
                     let &target = args.first().ok_or(E::InsufficientArgs {
                         cmd: command.into(),

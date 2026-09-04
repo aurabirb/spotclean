@@ -118,6 +118,10 @@ pub struct ConfigValues {
     /// of the whole library, one every `bpm_scan_min_interval_secs`, then idles. Set to `false`
     /// to have it stop at the end of whatever you've scrolled into view.
     pub bpm_scan_full_library: Option<bool>,
+    /// Initial state of the background BPM walk (default `true`). Toggle it at runtime with the
+    /// `togglebpmscan` command; the playing track is still analyzed either way, since its audio
+    /// is already being downloaded for playback.
+    pub bpm_scan_enabled: Option<bool>,
 }
 
 /// The ncspot theme.
