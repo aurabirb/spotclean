@@ -151,6 +151,10 @@ pub enum Command {
     Noop,
     Insert(InsertSource),
     NewPlaylist(String),
+    AddToPlaylist(String),
+    RemoveFromPlaylists,
+    BindKey,
+    ToggleSortFilter,
     Sort(SortKey, SortDirection),
     Logout,
     ShowRecommendations(TargetMode),
@@ -196,6 +200,7 @@ impl fmt::Display for Command {
             },
             Self::Insert(source) => vec![source.to_string()],
             Self::NewPlaylist(name) => vec![name.to_owned()],
+            Self::AddToPlaylist(name) => vec![name.to_owned()],
             Self::Sort(key, direction) => vec![key.to_string(), direction.to_string()],
             Self::ShowRecommendations(mode) => vec![mode.to_string()],
             Self::Execute(cmd) => vec![cmd.to_owned()],
@@ -214,6 +219,9 @@ impl fmt::Display for Command {
             | Self::SaveQueue
             | Self::Add
             | Self::AddCurrent
+            | Self::BindKey
+            | Self::RemoveFromPlaylists
+            | Self::ToggleSortFilter
             | Self::Delete
             | Self::Back
             | Self::Help
@@ -246,6 +254,8 @@ impl Command {
             Self::SaveQueue => "save queue",
             Self::Add => "add",
             Self::AddCurrent => "add current",
+            Self::BindKey => "bindkey",
+            Self::ToggleSortFilter => "togglesortfilter",
             Self::Delete => "delete",
             Self::Focus(_) => "focus",
             Self::Seek(_) => "seek",
@@ -269,6 +279,8 @@ impl Command {
             Self::Noop => "noop",
             Self::Insert(_) => "insert",
             Self::NewPlaylist(_) => "newplaylist",
+            Self::AddToPlaylist(_) => "addtoplaylist",
+            Self::RemoveFromPlaylists => "removefromplaylists",
             Self::Sort(_, _) => "sort",
             Self::Logout => "logout",
             Self::ShowRecommendations(_) => "similar",
@@ -423,6 +435,8 @@ pub fn parse(input: &str) -> Result<Vec<Command>, CommandParseError> {
                     None => Ok(Command::Save),
                 }?,
                 "delete" => Command::Delete,
+                "bindkey" => Command::BindKey,
+                "togglesortfilter" => Command::ToggleSortFilter,
                 "focus" => {
                     let &target = args.first().ok_or(E::InsufficientArgs {
                         cmd: command.into(),
@@ -718,6 +732,17 @@ pub fn parse(input: &str) -> Result<Vec<Command>, CommandParseError> {
                         })
                     }?
                 }
+                "addtoplaylist" => {
+                    if !args.is_empty() {
+                        Ok(Command::AddToPlaylist(args.join(" ")))
+                    } else {
+                        Err(E::InsufficientArgs {
+                            cmd: command.into(),
+                            hint: Some("a playlist name".into()),
+                        })
+                    }?
+                }
+                "removefromplaylists" => Command::RemoveFromPlaylists,
                 "sort" => {
                     let &key_raw = args.first().ok_or(E::InsufficientArgs {
                         cmd: command.into(),

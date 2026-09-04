@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fs::File;
 use std::iter::Iterator;
 use std::path::Path;
@@ -10,19 +10,21 @@ use rspotify::model::Id;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::bpm_scanner::BpmScanner;
 use crate::config::Config;
 use crate::config::{self, CACHE_VERSION};
 use crate::events::EventManager;
+use crate::liked_songs::LikedSongs;
 use crate::model::album::Album;
 use crate::model::artist::Artist;
 use crate::model::playable::Playable;
 use crate::model::playlist::Playlist;
 use crate::model::show::Show;
 use crate::model::track::Track;
+use crate::sort::SortState;
 use crate::spotify::Spotify;
 
-/// Cached tracks database filename.
-const CACHE_TRACKS: &str = "tracks.db";
+pub use crate::sort::SortStatus;
 
 /// Cached albums database filename.
 const CACHE_ALBUMS: &str = "albums.db";
@@ -37,7 +39,6 @@ const CACHE_PLAYLISTS: &str = "playlists.db";
 /// Spotify API used to manage items in the user library.
 #[derive(Clone)]
 pub struct Library {
-    pub tracks: Arc<RwLock<Vec<Track>>>,
     pub albums: Arc<RwLock<Vec<Album>>>,
     pub artists: Arc<RwLock<Vec<Artist>>>,
     pub playlists: Arc<RwLock<Vec<Playlist>>>,
@@ -48,14 +49,30 @@ pub struct Library {
     ev: EventManager,
     spotify: Spotify,
     pub cfg: Arc<Config>,
+    /// The user's "Liked Songs" list, virtualized and revalidated incrementally - see
+    /// [`crate::liked_songs`].
+    liked: LikedSongs,
+    /// Shared handle to the Liked Songs list (owned by `liked`), kept as a public field for the
+    /// views that read and write it directly.
+    pub saved_tracks: Arc<RwLock<Vec<Track>>>,
+    /// Dwell-gated local BPM detection and the tempo cache - see [`crate::bpm_scanner`].
+    bpm: BpmScanner,
+    /// The Sort tab's bound-playlist-key cache and playlist-mutation queue - see [`crate::sort`].
+    sort: SortState,
 }
 
 impl Library {
     /// Create an empty library for use in tests. No cache is loaded and no API calls are made.
     #[cfg(test)]
     pub fn new_for_test(ev: EventManager, spotify: Spotify, cfg: Arc<Config>) -> Arc<Self> {
+        let store = crate::store::Store::in_memory();
+        let liked = LikedSongs::new(spotify.clone(), ev.clone(), store.clone());
+        let saved_tracks = liked.saved_tracks();
+        let bpm =
+            BpmScanner::disconnected(spotify.clone(), store, cfg.clone(), ev.clone(), liked.clone());
+        // No worker is listening; queuing a mutation is a harmless no-op send that fails silently.
+        let (sort, _rx) = SortState::create();
         Arc::new(Self {
-            tracks: Arc::new(RwLock::new(Vec::new())),
             albums: Arc::new(RwLock::new(Vec::new())),
             artists: Arc::new(RwLock::new(Vec::new())),
             playlists: Arc::new(RwLock::new(Vec::new())),
@@ -66,6 +83,10 @@ impl Library {
             ev,
             spotify,
             cfg,
+            liked,
+            saved_tracks,
+            bpm,
+            sort,
         })
     }
 
@@ -74,8 +95,13 @@ impl Library {
         let user_id = current_user.as_ref().map(|u| u.id.id().to_string());
         let display_name = current_user.as_ref().and_then(|u| u.display_name.clone());
 
+        let store = crate::liked_songs::open_store();
+        let liked = LikedSongs::new(spotify.clone(), ev.clone(), store.clone());
+        let saved_tracks = liked.saved_tracks();
+        let bpm = BpmScanner::new(spotify.clone(), store, cfg.clone(), ev.clone(), liked.clone());
+        let (sort, playlist_mutation_rx) = SortState::create();
+
         let library = Self {
-            tracks: Arc::new(RwLock::new(Vec::new())),
             albums: Arc::new(RwLock::new(Vec::new())),
             artists: Arc::new(RwLock::new(Vec::new())),
             playlists: Arc::new(RwLock::new(Vec::new())),
@@ -86,10 +112,85 @@ impl Library {
             ev,
             spotify,
             cfg,
+            liked,
+            saved_tracks,
+            bpm,
+            sort,
         };
 
+        library.refresh_bound_playlist_keys();
+        SortState::spawn_worker(library.clone(), playlist_mutation_rx);
         library.update_library();
         library
+    }
+
+    /// Recompute the cached bound-playlist-key map from the current config. Call this whenever
+    /// keybindings change (config reload, or a key bound/unbound via [`Config::add_keybinding`]/
+    /// [`Config::remove_keybinding`]) - never from a per-row/per-draw path, since it re-parses the
+    /// keybinding config and logs every custom binding.
+    pub fn refresh_bound_playlist_keys(&self) {
+        self.sort.refresh(&self.cfg);
+    }
+
+    /// Handle to the Spotify API wrapper, for the helpers in [`crate::sort`].
+    pub(crate) fn spotify(&self) -> &Spotify {
+        &self.spotify
+    }
+
+    /// Queue `track` to be moved into `append_to`, dropping it from `remove_from` first. See
+    /// [`crate::sort::SortState::queue_playlist_mutation`].
+    pub fn queue_playlist_mutation(
+        &self,
+        track: Track,
+        remove_from: Vec<Playlist>,
+        append_to: Option<Playlist>,
+    ) {
+        self.sort
+            .queue_playlist_mutation(track, remove_from, append_to);
+    }
+
+    /// The freshest known BPM for `track_id`, if any - see [`crate::bpm_scanner`].
+    pub fn bpm_for(&self, track_id: &str) -> Option<f32> {
+        self.bpm.bpm_for(track_id)
+    }
+
+    /// Whether it's worth scheduling a BPM lookup for `track` right now.
+    pub fn wants_bpm_scan(&self, track: &Track) -> bool {
+        self.bpm.wants_bpm_scan(track)
+    }
+
+    /// Note that `track` is the currently selected row; the BPM scheduler's cursor follows it
+    /// once it's been rested on long enough.
+    pub fn note_track_selection(&self, track: &Track) {
+        self.bpm.note_track_selection(track);
+    }
+
+    /// Note that `playable` has just started playing, so its BPM can be analyzed from the audio
+    /// playback is already caching.
+    pub fn note_track_played(&self, playable: &Playable) {
+        if let Playable::Track(track) = playable {
+            self.bpm.note_track_played(track);
+        }
+    }
+
+    /// Current version counter for `saved_tracks`; changes whenever the list is mutated.
+    pub fn saved_tracks_version(&self) -> u64 {
+        self.liked.version()
+    }
+
+    /// Ensure rows up to `want` (plus a margin) have been validated against the API.
+    pub fn ensure_saved_tracks_through(&self, want: usize) {
+        self.liked.ensure_through(want);
+    }
+
+    /// Names (lowercased) of playlists that currently have a key bound to them.
+    pub fn bound_playlist_names(&self) -> HashSet<String> {
+        self.sort.bound_playlist_names()
+    }
+
+    /// Whether `track_id` has already been filed into a keybind-bound playlist, and which key(s).
+    pub fn sort_status(&self, track_id: &str) -> SortStatus {
+        self.sort.sort_status(&self.playlists, track_id)
     }
 
     /// Load cached items from the file at `cache_path` into the given `store`.
@@ -216,15 +317,8 @@ impl Library {
             let t_tracks = {
                 let library = library.clone();
                 thread::spawn(move || {
-                    library.load_cache(
-                        &config::cache_path(CACHE_TRACKS),
-                        library.tracks.write().unwrap().as_mut(),
-                    );
-                    library.fetch_tracks();
-                    library.save_cache(
-                        &config::cache_path(CACHE_TRACKS),
-                        &library.tracks.read().unwrap(),
-                    );
+                    library.liked.load_cache();
+                    library.liked.revalidate();
                 })
             };
 
@@ -276,7 +370,6 @@ impl Library {
                 })
             };
 
-            t_tracks.join().unwrap();
             t_artists.join().unwrap();
 
             library.populate_artists();
@@ -288,9 +381,11 @@ impl Library {
             t_albums.join().unwrap();
             t_playlists.join().unwrap();
             t_shows.join().unwrap();
+            t_tracks.join().unwrap();
 
             let mut is_done = library.is_done.write().unwrap();
             *is_done = true;
+            drop(is_done);
 
             library.ev.trigger();
         });
@@ -418,21 +513,6 @@ impl Library {
         }
     }
 
-    /// Add the artist with `id` and `name` to the user library, but don't sync with the API.
-    /// This does not add if there is already an artist with `id`.
-    fn insert_artist(&self, id: String, name: String) {
-        let mut artists = self.artists.write().unwrap();
-
-        if !artists
-            .iter()
-            .any(|a| a.id.as_ref().is_some_and(|value| *value == id))
-        {
-            let mut artist = Artist::new(id.to_string(), name.to_string());
-            artist.tracks = Some(Vec::new());
-            artists.push(artist);
-        }
-    }
-
     /// Fetch the albums from the web API and store them in the local library.
     fn fetch_albums(&self) {
         let mut albums: Vec<Album> = Vec::new();
@@ -476,121 +556,19 @@ impl Library {
         *self.albums.write().unwrap() = albums;
     }
 
-    /// Fetch the tracks from the web API and save them in the local library.
-    fn fetch_tracks(&self) {
-        let mut tracks = Vec::new();
-        let mut i = 0u32;
-
-        loop {
-            let page = self
-                .spotify
-                .api
-                .current_user_saved_tracks(tracks.len() as u32);
-
-            debug!("tracks page: {i}");
-            i += 1;
-
-            if page.is_err() {
-                error!("Failed to fetch tracks.");
-                return;
-            }
-            let page = page.unwrap();
-
-            if page.offset == 0 {
-                // If first page matches the first items in store and total is
-                // identical, assume list is unchanged.
-
-                let store = self.tracks.read().unwrap();
-
-                if page.total as usize == store.len()
-                    && !page
-                        .items
-                        .iter()
-                        .enumerate()
-                        .any(|(i, t)| t.track.id.as_ref().map(|id| id.to_string()) != store[i].id)
-                {
-                    return;
-                }
-            }
-
-            tracks.extend(page.items.iter().map(|t| t.into()));
-
-            if page.next.is_none() {
-                break;
-            }
-        }
-
-        *self.tracks.write().unwrap() = tracks;
-    }
-
+    /// Keep only followed artists, sorted by name. Unfollowed artists that were only present
+    /// because they had a saved track are no longer tracked (the Liked Songs list is not loaded
+    /// eagerly anymore); playing an artist falls back to their top tracks
+    /// (see [`crate::model::artist::Artist::load_top_tracks`]).
     fn populate_artists(&self) {
-        // Remove old unfollowed artists
-        {
-            let mut artists = self.artists.write().unwrap();
-            *artists = artists.iter().filter(|a| a.is_followed).cloned().collect();
-        }
-
-        // Add artists that aren't followed but have saved tracks
-        {
-            let tracks = self.tracks.read().unwrap();
-            let mut track_artists: Vec<(&String, &String)> = tracks
-                .iter()
-                .flat_map(|t| t.artist_ids.iter().zip(t.artists.iter()))
-                .collect();
-            track_artists.dedup_by(|a, b| a.0 == b.0);
-
-            for (id, name) in track_artists.iter() {
-                self.insert_artist(id.to_string(), name.to_string());
-            }
-        }
-
         let mut artists = self.artists.write().unwrap();
-        let mut lookup: HashMap<String, Option<usize>> = HashMap::new();
-
-        // Make sure only saved tracks are played when playing artists
-        for artist in artists.iter_mut() {
-            artist.tracks = Some(Vec::new());
-        }
-
+        artists.retain(|a| a.is_followed);
         artists.sort_unstable_by(|a, b| {
             let a_cmp = a.name.strip_prefix("The ").unwrap_or(&a.name);
             let b_cmp = b.name.strip_prefix("The ").unwrap_or(&b.name);
 
             a_cmp.partial_cmp(b_cmp).unwrap()
         });
-
-        // Add saved tracks to artists
-        {
-            let tracks = self.tracks.read().unwrap();
-            for track in tracks.iter() {
-                for artist_id in &track.artist_ids {
-                    let index = if let Some(i) = lookup.get(artist_id).cloned() {
-                        i
-                    } else {
-                        let i = artists
-                            .iter()
-                            .position(|a| &a.id.clone().unwrap_or_default() == artist_id);
-                        lookup.insert(artist_id.clone(), i);
-                        i
-                    };
-
-                    if let Some(i) = index {
-                        let artist = artists.get_mut(i).unwrap();
-                        if artist.tracks.is_none() {
-                            artist.tracks = Some(Vec::new());
-                        }
-
-                        if let Some(tracks) = artist.tracks.as_mut() {
-                            if tracks.iter().any(|t| t.id == track.id) {
-                                continue;
-                            }
-
-                            tracks.push(track.clone());
-                        }
-                    }
-                }
-            }
-        }
     }
 
     /// If there is a local version of the playlist, update it and rewrite the cache.
@@ -606,16 +584,11 @@ impl Library {
             &config::cache_path(CACHE_PLAYLISTS),
             &self.playlists.read().unwrap(),
         );
-    }
 
-    /// Check whether `track` is saved in the user's library.
-    pub fn is_saved_track(&self, track: &Playable) -> bool {
-        if !*self.is_done.read().unwrap() {
-            return false;
-        }
-
-        let tracks = self.tracks.read().unwrap();
-        tracks.iter().any(|t| t.id == track.id())
+        // Without this, anything computed from playlist membership (e.g. the sort indicator)
+        // stays stale until some unrelated redraw happens to come along, since this can be
+        // called from a background thread well after the triggering keypress already returned.
+        self.trigger_redraw();
     }
 
     /// Save `tracks` to the user's library.
@@ -624,38 +597,16 @@ impl Library {
             return;
         }
 
-        let save_tracks_result = self
+        if self
             .spotify
             .api
-            .current_user_saved_tracks_add(tracks.iter().filter_map(|t| t.id.as_deref()).collect());
-
-        if save_tracks_result.is_err() {
+            .current_user_saved_tracks_add(tracks.iter().filter_map(|t| t.id.as_deref()).collect())
+            .is_err()
+        {
             return;
         }
 
-        {
-            let mut store = self.tracks.write().unwrap();
-            let mut i = 0;
-            for track in tracks {
-                if store.iter().any(|t| t.id == track.id) {
-                    continue;
-                }
-
-                store.insert(i, (*track).clone());
-                i += 1;
-            }
-        }
-
-        self.populate_artists();
-
-        self.save_cache(
-            &config::cache_path(CACHE_TRACKS),
-            &self.tracks.read().unwrap(),
-        );
-        self.save_cache(
-            &config::cache_path(CACHE_ARTISTS),
-            &self.artists.read().unwrap(),
-        );
+        self.liked.apply_saved_added(tracks);
     }
 
     /// Remove `tracks` from the user's library.
@@ -675,25 +626,7 @@ impl Library {
             return;
         }
 
-        {
-            let mut store = self.tracks.write().unwrap();
-            *store = store
-                .iter()
-                .filter(|t| !tracks.iter().any(|tt| t.id == tt.id))
-                .cloned()
-                .collect();
-        }
-
-        self.populate_artists();
-
-        self.save_cache(
-            &config::cache_path(CACHE_TRACKS),
-            &self.tracks.read().unwrap(),
-        );
-        self.save_cache(
-            &config::cache_path(CACHE_ARTISTS),
-            &self.artists.read().unwrap(),
-        );
+        self.liked.apply_saved_removed(tracks);
     }
 
     /// Check whether `album` is saved to the user's library.

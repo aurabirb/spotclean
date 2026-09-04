@@ -13,6 +13,7 @@ use crate::library::Library;
 use crate::queue::{Queue, RepeatSetting};
 use crate::spotify::{Spotify, VOLUME_PERCENT};
 use crate::traits::{IntoBoxedViewExt, ListItem, ViewExt};
+use crate::ui::bind_key_menu::BindKeyMenu;
 use crate::ui::contextmenu::{
     AddToPlaylistMenu, ContextMenu, SelectArtistActionMenu, SelectArtistMenu,
 };
@@ -68,7 +69,9 @@ impl CommandManager {
     pub fn get_bindings(config: &Config) -> HashMap<String, Vec<Command>> {
         let config = config.values();
         let mut kb = if config.default_keybindings.unwrap_or(true) {
-            Self::default_keybindings()
+            let mut kb = Self::default_keybindings();
+            kb.extend(crate::keybindings::fork_keybindings());
+            kb
         } else {
             HashMap::new()
         };
@@ -87,6 +90,19 @@ impl CommandManager {
         }
 
         kb
+    }
+
+    /// Map of lowercased playlist name to the key currently bound to `addtoplaylist` for it.
+    pub fn bound_playlist_keys(config: &Config) -> HashMap<String, String> {
+        Self::get_bindings(config)
+            .into_iter()
+            .filter_map(|(key, cmds)| {
+                cmds.into_iter().find_map(|cmd| match cmd {
+                    Command::AddToPlaylist(name) => Some((name.to_ascii_lowercase(), key.clone())),
+                    _ => None,
+                })
+            })
+            .collect()
     }
 
     pub fn register_aliases<S: Into<String>>(&mut self, name: S, aliases: Vec<S>) {
@@ -231,6 +247,7 @@ impl CommandManager {
                 self.unregister_keybindings(s);
                 self.bindings.replace(Self::get_bindings(&self.config));
                 self.register_keybindings(s);
+                self.library.refresh_bound_playlist_keys();
                 Ok(None)
             }
             Command::NewPlaylist(name) => {
@@ -293,6 +310,11 @@ impl CommandManager {
                 }
                 Ok(None)
             }
+            Command::BindKey => {
+                let dialog = BindKeyMenu::bind_key_dialog(self.library.clone());
+                s.add_layer(dialog);
+                Ok(None)
+            }
             Command::SaveCurrent => {
                 if let Some(mut track) = self.queue.get_current() {
                     track.save(&self.library);
@@ -306,6 +328,9 @@ impl CommandManager {
             | Command::Save
             | Command::SaveQueue
             | Command::Add
+            | Command::AddToPlaylist(_)
+            | Command::RemoveFromPlaylists
+            | Command::ToggleSortFilter
             | Command::Delete
             | Command::Focus(_)
             | Command::Back
@@ -339,6 +364,8 @@ impl CommandManager {
             s.find_name::<SelectArtistActionMenu>("selectartistaction")
         {
             select_artist_action.on_command(s, cmd)?
+        } else if let Some(mut bind_key_menu) = s.find_name::<BindKeyMenu>("bindkeymenu") {
+            bind_key_menu.on_command(s, cmd)?
         } else {
             s.on_layout(|siv, mut l| l.on_command(siv, cmd))?
         };

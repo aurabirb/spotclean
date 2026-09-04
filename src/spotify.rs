@@ -1,6 +1,8 @@
 use std::error::Error;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
+use std::thread;
 use std::time::{Duration, SystemTime};
 use std::{env, fmt};
 
@@ -62,6 +64,12 @@ pub struct Spotify {
     since: Arc<RwLock<Option<SystemTime>>>,
     /// Channel to send commands to the worker thread.
     channel: Arc<RwLock<Option<mpsc::UnboundedSender<WorkerCommand>>>>,
+    /// The librespot [Session] owned by the worker thread, published here once it's connected so
+    /// non-playback code (e.g. offline BPM detection in [`crate::bpm`]) can fetch audio through it.
+    session: Arc<RwLock<Option<Session>>>,
+    /// Bumped on every [`Spotify::seek`] call; used to debounce rapid seeks so only the last one
+    /// is dispatched - see [`Spotify::seek`].
+    seek_generation: Arc<AtomicU64>,
 }
 
 impl Spotify {
@@ -81,6 +89,8 @@ impl Spotify {
             elapsed: Arc::new(RwLock::new(None)),
             since: Arc::new(RwLock::new(None)),
             channel: Arc::new(RwLock::new(None)),
+            session: Arc::new(RwLock::new(None)),
+            seek_generation: Arc::new(AtomicU64::new(0)),
         };
 
         let (user_tx, user_rx) = oneshot::channel();
@@ -115,7 +125,15 @@ impl Spotify {
             elapsed: Arc::new(RwLock::new(None)),
             since: Arc::new(RwLock::new(None)),
             channel: Arc::new(RwLock::new(None)),
+            session: Arc::new(RwLock::new(None)),
+            seek_generation: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// The connected librespot [Session], if the worker has finished connecting. Cloning a
+    /// `Session` is cheap (it's internally reference-counted).
+    pub fn session(&self) -> Option<Session> {
+        self.session.read().unwrap().clone()
     }
 
     /// Start the worker thread. If `user_tx` is given, it will receive the username of the logged
@@ -127,6 +145,7 @@ impl Spotify {
         let (tx, rx) = mpsc::unbounded_channel();
         *self.channel.write().unwrap() = Some(tx);
         let worker_channel = self.channel.clone();
+        let session_slot = self.session.clone();
         let cfg = self.cfg.clone();
         let events = self.events.clone();
         let volume = self.volume();
@@ -135,6 +154,7 @@ impl Spotify {
         let backend = Self::init_backend(backend_name)?;
         ASYNC_RUNTIME.get().unwrap().spawn(Self::worker(
             worker_channel,
+            session_slot,
             events,
             rx,
             cfg,
@@ -239,6 +259,7 @@ impl Spotify {
     #[allow(clippy::too_many_arguments)]
     async fn worker(
         worker_channel: Arc<RwLock<Option<mpsc::UnboundedSender<WorkerCommand>>>>,
+        session_slot: Arc<RwLock<Option<Session>>>,
         events: EventManager,
         commands: mpsc::UnboundedReceiver<WorkerCommand>,
         cfg: Arc<config::Config>,
@@ -265,6 +286,7 @@ impl Spotify {
             .await
             .expect("Could not create session");
         user_tx.map(|tx| tx.send(session.username()));
+        *session_slot.write().unwrap() = Some(session.clone());
 
         let mixer_factory_opt = librespot_playback::mixer::find(Some(SoftMixer::NAME));
         let factory = mixer_factory_opt.expect("could not find softvol mixer factory");
@@ -294,6 +316,7 @@ impl Spotify {
 
         error!("worker thread died, requesting restart");
         *worker_channel.write().unwrap() = None;
+        *session_slot.write().unwrap() = None;
         events.send(Event::SessionDied)
     }
 
@@ -442,7 +465,22 @@ impl Spotify {
     }
 
     /// Seek in the currently played [Playable] played by the [Player].
+    ///
+    /// This is an unconditional trailing debounce: the actual seek is dispatched ~150ms after the
+    /// last call, so rapid seeks (e.g. scrubbing the progress bar) coalesce into a single request
+    /// instead of hammering librespot's file fetch and rate limiter.
     pub fn seek(&self, position_ms: u32) {
+        let generation = self.seek_generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let this = self.clone();
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            if this.seek_generation.load(Ordering::SeqCst) == generation {
+                this.dispatch_seek(position_ms);
+            }
+        });
+    }
+
+    fn dispatch_seek(&self, position_ms: u32) {
         self.send_worker(WorkerCommand::Seek(position_ms));
         #[cfg(feature = "mpris")]
         self.notify_seeked(position_ms);

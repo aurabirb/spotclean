@@ -12,26 +12,35 @@ use ncspot::program_arguments;
 
 mod application;
 mod authentication;
+mod bpm;
+mod bpm_scanner;
 mod cli;
 mod command;
 mod commands;
 mod config;
 mod events;
 mod ext_traits;
+mod formatting;
+mod keybindings;
+mod liked_songs;
 mod library;
+mod load_debounce;
 mod model;
 mod panic;
 mod queue;
 mod serialization;
 mod sharing;
+mod sort;
 mod spotify;
 mod spotify_api;
 mod spotify_url;
 mod spotify_worker;
+mod store;
 mod theme;
 mod traits;
 mod ui;
 mod utils;
+mod worker_queue;
 
 #[cfg(unix)]
 mod ipc;

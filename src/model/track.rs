@@ -8,7 +8,7 @@ use rspotify::model::Id;
 use rspotify::model::album::FullAlbum;
 use rspotify::model::track::{FullTrack, SavedTrack, SimplifiedTrack};
 
-use crate::library::Library;
+use crate::library::{Library, SortStatus};
 use crate::model::album::Album;
 use crate::model::artist::Artist;
 use crate::model::playable::Playable;
@@ -38,6 +38,20 @@ pub struct Track {
 }
 
 impl Track {
+    /// The freshest known BPM for this track, from `library`'s cache. Views that keep their own
+    /// snapshot of tracks (e.g. the Sort tab) clone `Track` values up front, so always resolve
+    /// the BPM through the shared cache rather than storing it on the `Track`.
+    pub fn current_bpm(&self, library: &Library) -> Option<f32> {
+        self.id.as_deref().and_then(|id| library.bpm_for(id))
+    }
+
+    /// The detected BPM formatted for the list's tempo column (a bare rounded number), if known.
+    /// [`crate::ui::listview::ListView`] draws this leading segment of the right column in a
+    /// tempo-dependent colour.
+    pub fn bpm_display(&self, library: &Library) -> Option<String> {
+        self.current_bpm(library).map(|bpm| format!("{bpm:.0}"))
+    }
+
     pub fn from_simplified_track(track: &SimplifiedTrack, album: &FullAlbum) -> Self {
         let artists = track
             .artists
@@ -221,16 +235,21 @@ impl ListItem for Track {
         if right != default {
             Playable::format(&Playable::Track(self.clone()), &right, library)
         } else {
-            let saved = if library.is_saved_track(&Playable::Track(self.clone())) {
-                if library.cfg.values().use_nerdfont.unwrap_or(false) {
-                    "\u{f012c}"
-                } else {
-                    "✓"
-                }
-            } else {
-                ""
+            let sorted = match self.id.as_deref().map(|id| library.sort_status(id)) {
+                Some(SortStatus::Sorted(keys)) => keys.join(","),
+                Some(SortStatus::Unsorted) | Some(SortStatus::Unavailable) | None => String::new(),
             };
-            format!("{} {}", saved, self.duration_str())
+            // BPM leads so ListView can colour that prefix; then the sorted-into keys; then
+            // duration. Any empty segment is dropped so the spacing stays tidy.
+            [
+                self.bpm_display(library).unwrap_or_default(),
+                sorted,
+                self.duration_str(),
+            ]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ")
         }
     }
 
@@ -248,11 +267,8 @@ impl ListItem for Track {
     }
 
     fn toggle_saved(&mut self, library: &Library) {
-        if library.is_saved_track(&Playable::Track(self.clone())) {
-            library.unsave_tracks(&[self]);
-        } else {
-            library.save_tracks(&[self]);
-        }
+        // Saved state isn't tracked locally anymore, so "toggle" is a best-effort save.
+        library.save_tracks(&[self]);
     }
 
     fn save(&mut self, library: &Library) {
@@ -327,11 +343,6 @@ impl ListItem for Track {
 
     fn track(&self) -> Option<Track> {
         Some(self.clone())
-    }
-
-    #[inline]
-    fn is_saved(&self, library: &Library) -> Option<bool> {
-        Some(library.is_saved_track(&Playable::Track(self.clone())))
     }
 
     #[inline]

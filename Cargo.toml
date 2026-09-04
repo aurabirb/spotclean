@@ -53,7 +53,9 @@ futures = "0.3"
 image = {version = "0.25", default-features = false, features = ["jpeg", "png"], optional = true}
 ioctl-rs = {version = "0.2", optional = true}
 libc = "0.2.186"
+librespot-audio = "0.8.0"
 librespot-core = "0.8.0"
+librespot-metadata = "0.8.0"
 librespot-oauth = "0.8.0"
 librespot-playback = {version = "0.8.0", default-features = false, features = ["native-tls"]}
 librespot-protocol = "0.8.0"
@@ -62,13 +64,15 @@ pancurses = {version = "0.17.0", optional = true}
 parse_duration = "2.1.1"
 platform-dirs = "0.3.0"
 rand = "0.10"
+redb = "2"
 regex = "1"
-reqwest = {version = "0.13", features = ["blocking", "json"]}
+reqwest = {version = "0.13", features = ["blocking", "json", "query"]}
 serde = "1.0"
 serde_cbor = "0.11.2"
 serde_json = "1.0"
 strum = "0.28"
 strum_macros = "0.28"
+symphonia = {version = "0.5", default-features = false}
 tokio = {version = "1", features = ["rt-multi-thread", "sync", "time", "net"]}
 tokio-util = {version = "0.7.18", features = ["codec"]}
 tokio-stream = {version = "0.1.18", features = ["sync"]}
@@ -76,6 +80,7 @@ toml = "1.1"
 unicode-width = "0.2.2"
 url = "2.5"
 viuer = {version = "0.11", default-features = false, features = ["icy_sixel"], optional = true}
+rustfft = "6"
 
 [target.'cfg(unix)'.dependencies]
 signal-hook = "0.4.4"

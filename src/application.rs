@@ -131,12 +131,8 @@ impl Application {
         ));
 
         #[cfg(feature = "mpris")]
-        let mpris_manager = MprisManager::new(
-            event_manager.clone(),
-            queue.clone(),
-            library.clone(),
-            spotify.clone(),
-        );
+        let mpris_manager =
+            MprisManager::new(event_manager.clone(), queue.clone(), spotify.clone());
 
         #[cfg(feature = "mpris")]
         spotify.set_mpris(mpris_manager.clone());

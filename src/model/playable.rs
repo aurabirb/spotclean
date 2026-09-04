@@ -21,7 +21,7 @@ pub enum Playable {
 
 impl Playable {
     pub fn format(playable: &Self, formatting: &str, library: &Library) -> String {
-        formatting
+        let formatted = formatting
             .replace(
                 "%artists",
                 if let Some(artists) = playable.artists() {
@@ -62,22 +62,9 @@ impl Playable {
                 }
                 .as_str(),
             )
-            .replace(
-                "%saved",
-                if library.is_saved_track(&match playable.clone() {
-                    Self::Episode(episode) => Self::Episode(episode),
-                    Self::Track(track) => Self::Track(track),
-                }) {
-                    if library.cfg.values().use_nerdfont.unwrap_or_default() {
-                        "\u{f012c}"
-                    } else {
-                        "✓"
-                    }
-                } else {
-                    ""
-                },
-            )
-            .replace("%duration", playable.duration_str().as_str())
+            .replace("%duration", playable.duration_str().as_str());
+
+        crate::formatting::expand_fork_tokens(formatted, playable, library)
     }
 
     pub fn id(&self) -> Option<String> {

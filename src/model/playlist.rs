@@ -81,7 +81,12 @@ impl Playlist {
         }
     }
 
-    pub fn append_tracks(&mut self, new_tracks: &[Playable], spotify: &Spotify, library: &Library) {
+    pub fn append_tracks(
+        &mut self,
+        new_tracks: &[Playable],
+        spotify: &Spotify,
+        library: &Library,
+    ) -> bool {
         let mut has_modified = false;
 
         if spotify
@@ -97,6 +102,8 @@ impl Playlist {
         if has_modified {
             library.playlist_update(self);
         }
+
+        has_modified
     }
 
     pub fn sort(&mut self, key: &SortKey, direction: &SortDirection) {

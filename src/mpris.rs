@@ -13,7 +13,6 @@ use zbus::zvariant::{ObjectPath, Value};
 use zbus::{connection, interface};
 
 use crate::application::ASYNC_RUNTIME;
-use crate::library::Library;
 use crate::model::album::Album;
 use crate::model::episode::Episode;
 use crate::model::playable::Playable;
@@ -72,7 +71,6 @@ impl MprisRoot {
 struct MprisPlayer {
     event: EventManager,
     queue: Arc<Queue>,
-    library: Arc<Library>,
     spotify: Spotify,
 }
 
@@ -241,18 +239,8 @@ impl MprisPlayer {
                     .into(),
             ),
         );
-        hm.insert(
-            "xesam:userRating".to_string(),
-            Value::F64(
-                playable
-                    .and_then(|p| p.track())
-                    .map(|t| match self.library.is_saved_track(&Playable::Track(t)) {
-                        true => 1.0,
-                        false => 0.0,
-                    })
-                    .unwrap_or(0.0),
-            ),
-        );
+        // Saved ("Liked Songs") state is no longer tracked locally.
+        hm.insert("xesam:userRating".to_string(), Value::F64(0.0));
 
         hm
     }
@@ -490,17 +478,11 @@ pub struct MprisManager {
 }
 
 impl MprisManager {
-    pub fn new(
-        event: EventManager,
-        queue: Arc<Queue>,
-        library: Arc<Library>,
-        spotify: Spotify,
-    ) -> Self {
+    pub fn new(event: EventManager, queue: Arc<Queue>, spotify: Spotify) -> Self {
         let root = MprisRoot {};
         let player = MprisPlayer {
             event,
             queue,
-            library,
             spotify,
         };
 

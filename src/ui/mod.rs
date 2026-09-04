@@ -3,6 +3,7 @@ use ncspot::BIN_NAME;
 
 pub mod album;
 pub mod artist;
+pub mod bind_key_menu;
 pub mod browse;
 pub mod contextmenu;
 pub mod help;
@@ -14,6 +15,7 @@ pub mod pagination;
 pub mod playlist;
 pub mod playlists;
 pub mod queue;
+pub mod saved_tracks;
 pub mod search;
 pub mod search_results;
 pub mod show;

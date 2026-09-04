@@ -13,6 +13,7 @@ use crate::traits::ViewExt;
 use crate::ui::browse::BrowseView;
 use crate::ui::listview::ListView;
 use crate::ui::playlists::PlaylistsView;
+use crate::ui::saved_tracks::SavedTracksView;
 use crate::ui::tabbedview::TabbedView;
 
 pub struct LibraryView {
@@ -34,7 +35,7 @@ impl LibraryView {
             match tab {
                 LibraryTab::Tracks => tabview.add_tab(
                     "Tracks",
-                    ListView::new(library.tracks.clone(), queue.clone(), library.clone()),
+                    SavedTracksView::new(queue.clone(), library.clone()),
                 ),
                 LibraryTab::Albums => tabview.add_tab(
                     "Albums",

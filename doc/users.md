@@ -75,8 +75,8 @@ playback depending on your desktop environment settings. Have a look at the
 | <kbd>F8</kbd>     | Album Art (if built with the `cover` feature).                                |
 | <kbd>/</kbd>      | Open a Vim-like search bar (See [specific commands](#vim-like-search-bar)).   |
 | <kbd>:</kbd>      | Open a Vim-like command prompt (See [specific commands](#vim-like-commands)). |
-| <kbd>Escape</kbd> | Close Vim-like search bar, command prompt, or Search screen.                  |
-| <kbd>Q</kbd>      | Quit `ncspot`.                                                                |
+| <kbd>Escape</kbd> | Close the current view (also closes the Vim-like search bar, command prompt, or Search screen). |
+| <kbd>Shift</kbd>+<kbd>Q</kbd> | Quit `ncspot`.                                                           |
 | <kbd>g</kbd>      | Go to the top of the current view (Vim motion).                               |
 | <kbd>G</kbd>      | Go to the bottom of the current view (Vim motion).                            |
 
@@ -84,16 +84,17 @@ playback depending on your desktop environment settings. Have a look at the
 | Key                           | Command                                                        |
 |-------------------------------|----------------------------------------------------------------|
 | <kbd>Return</kbd>             | Play track or playlist.                                        |
-| <kbd>Space</kbd>              | Queue track or playlist.                                       |
+| <kbd>Space</kbd>              | Toggle playback (i.e. Play/Pause).                             |
+| <kbd>Q</kbd>                  | Queue track or playlist.                                       |
 | <kbd>.</kbd>                  | Play the selected item after the currently playing track.      |
-| <kbd>P</kbd>                  | Move to the currently playing track in the queue.              |
+| <kbd>P</kbd>                  | Toggle playback (i.e. Play/Pause).                             |
 | <kbd>S</kbd>                  | Save the currently playing item to your library.               |
 | <kbd>D</kbd>                  | Remove the currently playing item from your library.           |
-| <kbd>Shift</kbd>+<kbd>P</kbd> | Toggle playback (i.e. Play/Pause).                             |
+| <kbd>Shift</kbd>+<kbd>P</kbd> | Move to the currently playing track in the queue.              |
 | <kbd>Shift</kbd>+<kbd>S</kbd> | Stop playback.                                                 |
 | <kbd>Shift</kbd>+<kbd>U</kbd> | Update the library cache (tracks, artists, albums, playlists). |
-| <kbd><</kbd>                  | Play the previous track.                                       |
-| <kbd>></kbd>                  | Play the next track.                                           |
+| <kbd><</kbd>                  | Play the previous track and move the selection to it.          |
+| <kbd>></kbd>                  | Play the next track and move the selection to it.               |
 | <kbd>F</kbd>                  | Seek forward by 1 second.                                      |
 | <kbd>Shift</kbd>+<kbd>F</kbd> | Seek forward by 10 seconds.                                    |
 | <kbd>B</kbd>                  | Seek backward by 1 second.                                     |
@@ -115,7 +116,7 @@ playback depending on your desktop environment settings. Have a look at the
 | <kbd>M</kbd>                  | Open the **recommendations view** for the **selected item**.                                              |
 | <kbd>Shift</kbd>+<kbd>M</kbd> | Open the **recommendations view** for the **currently playing track**.                                    |
 | <kbd>Ctrl</kbd>+<kbd>V</kbd>  | Open the context menu for a Spotify link in your clipboard (if built with the `share_clipboard` feature). |
-| <kbd>Backspace</kbd>          | Close the current view.                                                                                   |
+| <kbd>Backspace</kbd>          | Remove the selected track from every keybind-bound playlist it's currently filed into (see `bindkey` below). Never touches Liked Songs. Use <kbd>Escape</kbd> to close the current view instead. |
 
 When pressing <kbd>O</kbd>:
 
@@ -179,6 +180,10 @@ Note: \<FOO\> - mandatory arg; [BAR] - optional arg
 | `clear`                                                          | Clear the queue.                                                                                                                                                                                                                                                |
 | `share` \<ITEM\>                                                 | Copy a shareable URL of the item to the system clipboard. Requires the `share_clipboard` feature.<br/>\* Valid values for ITEM: `selected`, `current`                                                                                                           |
 | `newplaylist` \<NAME\>                                           | Create a new playlist.                                                                                                                                                                                                                                          |
+| `addtoplaylist` \<NAME\>                                         | Toggle the selected track's membership in the playlist called NAME: add it if it's not there, or remove it (every copy) if it is. Only NAME is touched - other playlists the track is in, whether or not they have a key bound, are left alone. Liked Songs is never touched. See [custom keybindings](#custom-keybindings) for a one-key-per-playlist example.                                                                                            |
+| `removefromplaylists`                                            | Remove the selected track (every copy of it) from every playlist that has a key bound to `addtoplaylist` and currently contains it. Liked Songs is never touched. Bound to `Backspace` by default.                                                                              |
+| `bindkey`                                                        | Open a menu listing playlists next to the key (if any) currently bound to each, and bind a new key to the selected one. Press Backspace on an entry to clear its binding instead. Bound to `` ` `` by default. Writes to `config.toml` and reloads keybindings automatically.                                                     |
+| `togglesortfilter`                                               | In the `Sort` tab, toggle hiding tracks that are already in a playlist bound to a key. Bound to `'` by default, and on by default (already-sorted tracks start hidden).                                                                                       |
 | `sort` \<SORT_KEY\> [SORT_DIRECTION]                             | Sort a playlist.<br/>\* Valid values for SORT_KEY: `title`, `album`, `artist`, `duration`, `added`<br/>\* Valid values for SORT_DIRECTION: `ascending` (default; aliases: `a`, `asc`), `descending` (aliases: `d`, `desc`)                                      |
 | `exec` \<CMD\>                                                   | Execute a command in the system shell.<br/>\* Command output is printed to the terminal, so redirection (`2> /dev/null`) may be necessary.                                                                                                                      |
 | `noop`                                                           | Do nothing. Useful for disabling default keybindings. See [custom keybindings](#custom-keybindings).                                                                                                                                                            |
@@ -269,6 +274,10 @@ Possible configuration values are:
 | `[theme]`                       | Custom theme                                                   | See [custom theme](#theming)                                                          |                     |
 | `[keybindings]`                 | Custom keybindings                                             | See [custom keybindings](#custom-keybindings)                                         |                     |
 | `ap_port`                       | Set ap-port for librespot (for restrictive firewalls)          | `80`, `443`, `4070`                                                                   |                     |
+| `enrich_metadata`               | Detect a track's BPM the first time it's selected in a list, so `%bpm` can be shown. Detection runs locally on the track's own Spotify audio stream (fetched via librespot, and served straight from the audio cache if the track has been played before); nothing is sent to any third party. Detected BPMs are cached on disk and reused on later runs. Set to `false` to disable. | `true`, `false` | `true`              |
+| `bpm_scan_delay_secs`           | Seconds the selection must rest on a row before the BPM scanner's cursor follows it there. The track you're *playing* is analyzed straight away. | any integer | `1`                 |
+| `bpm_scan_min_interval_secs`    | Minimum seconds between two BPM audio fetches, so bulk scanning doesn't trip Spotify's rate limiter (which would block playback). | any integer | `15`                |
+| `bpm_scan_full_library`         | Have the BPM scanner load more of the Liked Songs list as it walks past the loaded end, and wrap to the front when done - so left running it detects the BPM of the whole library. Set `false` to have it stop at the end of what you've scrolled into view. | `true`, `false` | `true`              |
 
 1. If built with the `cover` feature.
 2. By default the statusbar will show a play icon when a track is playing and
@@ -307,13 +316,30 @@ Its value is a string that can be parsed as a command. See
 "Shift+i" = "seek +10s"
 ```
 
+Sort liked songs into playlists with one key each, from the `Sort` library tab
+(or the `Tracks` tab):
+
+```toml
+[keybindings]
+"1" = "addtoplaylist Chill"
+"2" = "addtoplaylist Workout"
+```
+
+(the playlist name is everything after `addtoplaylist`, unquoted - quoting it
+does not work, since keybinding commands aren't shell-parsed)
+
+Rather than hand-editing bindings like the above, press `` ` `` (the `bindkey`
+command) from any track list to pick a playlist and then press the key you
+want bound to it. This edits `config.toml` for you and takes effect
+immediately. Press `Backspace` to drop the selected track from all of its
+bound playlists again (Liked Songs is never touched by any of this).
+
 To disable a default keybinding, set its command to `noop`:
 
 ```toml
-# Use "Shift+q" to quit instead of the default "q"
+# Turn off the default Space (playpause) binding
 [keybindings]
-"Shift+q" = "quit"
-"q" = "noop"
+"Space" = "noop"
 ```
 
 </details>
@@ -362,9 +388,21 @@ It's possible to customize how tracks are shown in Queue/Library views and the
 statusbar, whereas `statusbar_format` will hold the statusbar formatting and
 `[track_format]` the formatting for tracks in list views.
 If you don't define `center` for example, the default value will be used.
-Available options for tracks: `%artists`, `%artist`, `%title`, `%album`, `%saved`,
-`%duration`.
+Available options for tracks: `%artists`, `%artist`, `%title`, `%album`,
+`%duration`, `%bpm`, `%sorted`.
 `%artists` will show all contributing artists, while `%artist` only shows the first listed artist.
+`%bpm` is empty until [`enrich_metadata`](#configuration) has detected it for a
+track (see that option for how detection is scheduled and throttled). In the
+default `right` column the BPM number is drawn in a tempo-dependent colour -
+teal for slow, amber in the middle, red for fast.
+`%sorted` shows the key(s) it's filed under if the track has already been filed into one or more
+of the playlists bound to a key (see [custom keybindings](#custom-keybindings) and the `bindkey`
+command), joined with a comma if more than one applies, and nothing otherwise (whether it just
+hasn't been sorted yet, or no playlist is currently bound to a key at all). It's shown by default
+in the `right` column.
+`%saved` is still accepted for backwards compatibility but always renders nothing: this fork loads
+Liked Songs lazily as you scroll rather than keeping the whole list in memory, so a per-track
+"saved" indicator is no longer available.
 
 Default configuration:
 
@@ -374,7 +412,7 @@ statusbar_format = "%artists - %title"
 [track_format]
 left = "%artists - %title"
 center = "%album"
-right = "%saved %duration"
+right = "%bpm %sorted %duration"
 ```
 
 <details>
@@ -397,7 +435,7 @@ left = "%title - %artists"
 center = ""
 ```
 
-Example 3 - Show everything as default, but hide saved status and track length:
+Example 3 - Show everything as default, but hide the sorted-into indicator and track length:
 
 ```toml
 [track_format]
@@ -411,11 +449,11 @@ Example 4 - Show everything as default, except show title before artists:
 left = "%title - %artists"
 ```
 
-Example 5 - Show saved status and duration first, followed by track title and artists, with the album last:
+Example 5 - Show the sorted-into indicator and duration first, followed by track title and artists, with the album last:
 
 ```toml
 [track_format]
-left = "|%saved| %duration | %title - %artists"
+left = "|%sorted| %duration | %title - %artists"
 center = ""
 right = "%album"
 ```

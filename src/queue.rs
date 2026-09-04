@@ -45,7 +45,12 @@ pub struct Queue {
     current_track: RwLock<Option<usize>>,
     spotify: Spotify,
     cfg: Arc<Config>,
+    // Retained for upstream parity; the notification path that reads it now lives in
+    // `LoadDebouncer`.
+    #[allow(dead_code)]
     library: Arc<Library>,
+    /// Debounces track loads so rapid Previous/Next presses only load the final track.
+    load_debouncer: crate::load_debounce::LoadDebouncer,
 }
 
 impl Queue {
@@ -57,6 +62,11 @@ impl Queue {
             spotify: spotify.clone(),
             current_track: RwLock::new(queue_state.current_track),
             random_order: RwLock::new(queue_state.random_order),
+            load_debouncer: crate::load_debounce::LoadDebouncer::new(
+                spotify,
+                cfg.clone(),
+                library.clone(),
+            ),
             cfg,
             library,
         }
@@ -283,38 +293,11 @@ impl Queue {
             index = rng.random_range(0..queue_length);
         }
 
-        if let Some(track) = &self.queue.read().unwrap().get(index) {
-            self.spotify.load(track, true, 0);
+        if let Some(track) = self.queue.read().unwrap().get(index).cloned() {
             let mut current = self.current_track.write().unwrap();
             current.replace(index);
-            self.spotify.update_track();
 
-            #[cfg(feature = "notify")]
-            if self.cfg.values().notify.unwrap_or(false) {
-                std::thread::spawn({
-                    // use same parser as track_format, Playable::format
-                    let format = self
-                        .cfg
-                        .values()
-                        .notification_format
-                        .clone()
-                        .unwrap_or_default();
-                    let default_title = crate::config::NotificationFormat::default().title.unwrap();
-                    let title = format.title.unwrap_or_else(|| default_title.clone());
-
-                    let default_body = crate::config::NotificationFormat::default().body.unwrap();
-                    let body = format.body.unwrap_or_else(|| default_body.clone());
-
-                    let summary_txt = Playable::format(track, &title, &self.library);
-                    let body_txt = Playable::format(track, &body, &self.library);
-                    let cover_url = track.cover_url();
-                    move || send_notification(&summary_txt, &body_txt, cover_url)
-                });
-            }
-
-            // Send a Seeked signal at start of new track
-            #[cfg(feature = "mpris")]
-            self.spotify.notify_seeked(0);
+            self.load_debouncer.dispatch(track);
         }
 
         if reshuffle && self.get_shuffle() {
@@ -565,6 +548,11 @@ mod tests {
             queue: Arc::new(RwLock::new(tracks)),
             random_order: RwLock::new(None),
             current_track: RwLock::new(current),
+            load_debouncer: crate::load_debounce::LoadDebouncer::new(
+                spotify.clone(),
+                cfg.clone(),
+                library.clone(),
+            ),
             spotify,
             cfg,
             library,

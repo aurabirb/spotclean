@@ -14,7 +14,7 @@ use crate::model::playable::Playable;
 use crate::queue;
 use crate::serialization::{CBOR, Serializer, TOML};
 
-pub const CACHE_VERSION: u16 = 1;
+pub const CACHE_VERSION: u16 = 2;
 pub const DEFAULT_COMMAND_KEY: char = ':';
 
 /// The playback state when ncspot is started.
@@ -51,7 +51,7 @@ impl TrackFormat {
         Self {
             left: Some(String::from("%artists - %title")),
             center: Some(String::from("%album")),
-            right: Some(String::from("%saved %duration")),
+            right: Some(String::from("%bpm %sorted %duration")),
         }
     }
 }
@@ -101,6 +101,23 @@ pub struct ConfigValues {
     pub library_tabs: Option<Vec<LibraryTab>>,
     pub hide_display_names: Option<bool>,
     pub ap_port: Option<u16>,
+    /// When set (the default), detect a track's BPM from its audio the first time it's selected
+    /// in a list, so `%bpm` can be shown. The detection runs entirely locally on the track's
+    /// Spotify audio stream (see [`crate::bpm`]); nothing is sent to any third party.
+    pub enrich_metadata: Option<bool>,
+    /// Seconds the selection must rest on a row before the BPM scanner's cursor follows it
+    /// (default 1). Higher values mean it's less easily nudged while you scroll around. (The
+    /// track you're *playing* is analyzed straight away regardless.)
+    pub bpm_scan_delay_secs: Option<u64>,
+    /// Minimum seconds between two BPM audio fetches (default 15). BPM detection streams ~a
+    /// minute of audio per track; doing that rapidly trips Spotify's anti-scraping limiter,
+    /// which then blocks normal playback for a while. Raise this if you still hit it.
+    pub bpm_scan_min_interval_secs: Option<u64>,
+    /// When set (the default), the BPM scanner loads more of the Liked Songs list as it walks
+    /// past the loaded end and wraps to the front when done - so left running it detects the BPM
+    /// of the whole library, one every `bpm_scan_min_interval_secs`, then idles. Set to `false`
+    /// to have it stop at the end of whatever you've scrolled into view.
+    pub bpm_scan_full_library: Option<bool>,
 }
 
 /// The ncspot theme.
@@ -284,6 +301,36 @@ impl Config {
         let cfg = load(&self.filename)?;
         *self.values.write().unwrap() = cfg;
         Ok(())
+    }
+
+    /// Bind `key` to `command` and persist it to the configuration file. Callers should follow up
+    /// with [`Command::ReloadConfig`](crate::command::Command::ReloadConfig) to activate the new
+    /// binding.
+    pub fn add_keybinding(&self, key: String, command: String) {
+        {
+            let mut values = self.values.write().unwrap();
+            values
+                .keybindings
+                .get_or_insert_with(HashMap::new)
+                .insert(key, command);
+        }
+        if let Err(e) = TOML.write(config_path(&self.filename), &*self.values()) {
+            error!("Could not save keybinding: {e}");
+        }
+    }
+
+    /// Remove `key`'s binding and persist it to the configuration file. Callers should follow up
+    /// with [`Command::ReloadConfig`](crate::command::Command::ReloadConfig) to deactivate it.
+    pub fn remove_keybinding(&self, key: &str) {
+        {
+            let mut values = self.values.write().unwrap();
+            if let Some(keybindings) = values.keybindings.as_mut() {
+                keybindings.remove(key);
+            }
+        }
+        if let Err(e) = TOML.write(config_path(&self.filename), &*self.values()) {
+            error!("Could not save keybinding removal: {e}");
+        }
     }
 }
 

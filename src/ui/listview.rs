@@ -37,6 +37,22 @@ pub enum MouseHandleResult {
     Unhandled(Command),
 }
 
+/// A colour for a BPM readout: teal for slow, through amber, to red for fast (clamped to
+/// 70-180 BPM). Truecolour; cursive downsamples on limited terminals.
+fn tempo_color(bpm: f32) -> ColorType {
+    fn lerp(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+        let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+        (mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+    }
+    let t = ((bpm - 70.0) / 110.0).clamp(0.0, 1.0);
+    let (r, g, b) = if t < 0.5 {
+        lerp((0x3a, 0xa0, 0x9a), (0xd9, 0xb0, 0x4e), t * 2.0)
+    } else {
+        lerp((0xd9, 0xb0, 0x4e), (0xd0, 0x50, 0x50), (t - 0.5) * 2.0)
+    };
+    ColorType::Color(cursive::theme::Color::Rgb(r, g, b))
+}
+
 pub struct ListView<I: ListItem> {
     content: Arc<RwLock<Vec<I>>>,
     last_content_len: usize,
@@ -50,6 +66,10 @@ pub struct ListView<I: ListItem> {
     library: Arc<Library>,
     pagination: Pagination<I>,
     title: String,
+    /// Whether the "currently playing" highlight matches by track identity alone (see
+    /// [`ListView::with_match_playing_by_id`]), instead of requiring this row's index to also
+    /// equal [`Queue::get_current_index`].
+    match_playing_by_id: bool,
 }
 
 impl<I: ListItem> Scroller for ListView<I> {
@@ -77,6 +97,7 @@ impl<I: ListItem + Clone> ListView<I> {
             library,
             pagination: Pagination::default(),
             title: "".to_string(),
+            match_playing_by_id: false,
         };
         result.try_paginate();
         result
@@ -84,6 +105,19 @@ impl<I: ListItem + Clone> ListView<I> {
 
     pub fn with_title(mut self, title: &str) -> Self {
         self.title = title.to_string();
+        self
+    }
+
+    /// Match the "currently playing" highlight by track identity alone, rather than also
+    /// requiring this row's index to equal [`Queue::get_current_index`].
+    ///
+    /// That index check is what lets a list showing duplicate tracks highlight only the one
+    /// actually playing rather than every occurrence, but it assumes `content` and the row order
+    /// it's playing from are the same list - true for e.g. the Queue tab, false for a filtered
+    /// view like the Sort tab, where a row's index never corresponds to the queue's index and the
+    /// currently playing track would otherwise never highlight there at all.
+    pub fn with_match_playing_by_id(mut self, enabled: bool) -> Self {
+        self.match_playing_by_id = enabled;
         self
     }
 
@@ -139,6 +173,13 @@ impl<I: ListItem + Clone> ListView<I> {
         self.selected
     }
 
+    /// Index of the last row currently within the viewport - used to decide how far ahead a
+    /// lazily-loaded list needs to be filled.
+    pub fn last_visible_index(&self) -> usize {
+        let viewport = self.scroller.content_viewport();
+        viewport.bottom().max(self.selected)
+    }
+
     pub fn get_indexes_of(&self, query: &str) -> Vec<usize> {
         let content = self.content.read().unwrap();
         content
@@ -151,6 +192,11 @@ impl<I: ListItem + Clone> ListView<I> {
             })
             .map(|(i, _)| i)
             .collect()
+    }
+
+    /// The index of the currently selected row.
+    pub fn selected_index(&self) -> usize {
+        self.selected
     }
 
     pub fn move_focus_to(&mut self, target: usize) {
@@ -350,8 +396,8 @@ impl<I: ListItem + Clone> View for ListView<I> {
                 });
             } else if i < content.len() {
                 let item = &content[i];
-                let currently_playing =
-                    item.is_playing(&self.queue) && self.queue.get_current_index() == Some(i);
+                let currently_playing = item.is_playing(&self.queue)
+                    && (self.match_playing_by_id || self.queue.get_current_index() == Some(i));
                 let is_local = item.track().map(|t| t.is_local).unwrap_or_default();
                 let is_playable = item.track().map(|t| t.is_playable).unwrap_or_default();
 
@@ -448,6 +494,18 @@ impl<I: ListItem + Clone> View for ListView<I> {
                 printer.with_color(style, |printer| {
                     printer.print((offset, 0), &right);
                 });
+
+                // Recolour the leading BPM segment of the right column by tempo.
+                if let Some(track) = item.track()
+                    && let Some(bpm) = track.current_bpm(&self.library)
+                    && let Some(bpm_str) = track.bpm_display(&self.library)
+                    && right.starts_with(&bpm_str)
+                {
+                    let bpm_style = ColorStyle::new(tempo_color(bpm), style.back);
+                    printer.with_color(bpm_style, |printer| {
+                        printer.print((offset, 0), &bpm_str);
+                    });
+                }
             }
         });
     }
@@ -657,6 +715,18 @@ impl<I: ListItem + Clone> ViewExt for ListView<I> {
                             }
                         }
                         self.try_paginate();
+                        return Ok(CommandResult::Consumed(None));
+                    }
+                    MoveMode::Playing => {
+                        let index = self
+                            .content
+                            .read()
+                            .unwrap()
+                            .iter()
+                            .position(|item| item.is_playing(&self.queue));
+                        if let Some(index) = index {
+                            self.move_focus_to(index);
+                        }
                         return Ok(CommandResult::Consumed(None));
                     }
                     _ => return Ok(CommandResult::Consumed(None)),
