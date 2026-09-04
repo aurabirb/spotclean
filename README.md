@@ -99,12 +99,15 @@ background walk off with `:togglebpmscan` (<kbd>Shift</kbd>+<kbd>t</kbd>) when
 you'd rather spend the rate limit on playback; the playing track is still
 analysed.
 
-Set `bpm_scan_cache_full = true` to have the walk fetch each track in full at
-your configured `bitrate` and leave it in librespot's cache, gradually making
-your library available offline. This is a whole-library download (many GB) and
-much more likely to trip Spotify's rate limiter — raise
-`bpm_scan_min_interval_secs` and cap `audio_cache_size` if you use it. See
-[`doc/users.md`](doc/users.md#configuration) for every `bpm_scan_*` option.
+By default (`bpm_scan_cache_full = true`) the walk fetches each track in full at
+your configured `bitrate` and leaves it in librespot's cache — this skips a
+second CDN fetch when you later play the track and, in testing, behaves better
+than the range-only fetch, with the side benefit of gradually making your
+library available offline. It is a whole-library download (many GB), so cap
+`audio_cache_size` and raise `bpm_scan_min_interval_secs` if you hit the rate
+limiter. Set `bpm_scan_cache_full = false` to fetch only the short analysis
+window instead. See [`doc/users.md`](doc/users.md#configuration) for every
+`bpm_scan_*` option.
 
 ### Exploring the estimator
 

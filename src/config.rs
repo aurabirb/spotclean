@@ -122,11 +122,12 @@ pub struct ConfigValues {
     /// `togglebpmscan` command; the playing track is still analyzed either way, since its audio
     /// is already being downloaded for playback.
     pub bpm_scan_enabled: Option<bool>,
-    /// When set (default `false`), the BPM scanner fetches each track at the configured
+    /// When set (default `true`), the BPM scanner fetches each track at the configured
     /// [`bitrate`](Self::bitrate) and downloads it in full, so librespot caches it for offline
-    /// playback. This turns the scan into a whole-library download - many GB of audio CDN
-    /// traffic - and is far more likely to trip Spotify's rate limiter; raise
-    /// [`bpm_scan_min_interval_secs`](Self::bpm_scan_min_interval_secs) if you enable it.
+    /// playback. This also avoids a second CDN fetch at playback time, which in testing behaves
+    /// better than the range-only fetch. It does turn the scan into a whole-library download -
+    /// many GB of audio CDN traffic; set to `false` to fetch only the analysis window, and raise
+    /// [`bpm_scan_min_interval_secs`](Self::bpm_scan_min_interval_secs) if you hit the rate limiter.
     pub bpm_scan_cache_full: Option<bool>,
 }
 

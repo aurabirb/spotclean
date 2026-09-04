@@ -389,7 +389,7 @@ impl BpmScanner {
     /// playback. `require_cached` is filled in per call site.
     fn cdn_scan_options(&self) -> ScanOptions {
         let values = self.inner.cfg.values();
-        if values.bpm_scan_cache_full.unwrap_or(false) {
+        if values.bpm_scan_cache_full.unwrap_or(true) {
             ScanOptions {
                 require_cached: false,
                 bitrate: Some(values.bitrate.unwrap_or(320)),
