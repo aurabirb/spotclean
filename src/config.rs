@@ -49,9 +49,9 @@ pub struct TrackFormat {
 impl TrackFormat {
     pub fn default() -> Self {
         Self {
-            left: Some(String::from("%artists - %title")),
+            left: Some(String::from("%bpm %artists - %title")),
             center: Some(String::from("%album")),
-            right: Some(String::from("%bpm %sorted %duration")),
+            right: Some(String::from("%sorted %duration")),
         }
     }
 }

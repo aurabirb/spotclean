@@ -437,6 +437,18 @@ impl<I: ListItem + Clone> View for ListView<I> {
                     printer.print((0, 0), &left);
                 });
 
+                // Recolour the leading BPM segment of the left column by tempo.
+                if let Some(track) = item.track()
+                    && let Some(bpm) = track.current_bpm(&self.library)
+                    && let Some(bpm_str) = track.bpm_display(&self.library)
+                    && left.starts_with(&bpm_str)
+                {
+                    let bpm_style = ColorStyle::new(tempo_color(bpm), style.back);
+                    printer.with_color(bpm_style, |printer| {
+                        printer.print((0, 0), &bpm_str);
+                    });
+                }
+
                 // if line contains search query match, draw on top with
                 // highlight color
                 if self.search_indexes.contains(&i) {
@@ -494,18 +506,6 @@ impl<I: ListItem + Clone> View for ListView<I> {
                 printer.with_color(style, |printer| {
                     printer.print((offset, 0), &right);
                 });
-
-                // Recolour the leading BPM segment of the right column by tempo.
-                if let Some(track) = item.track()
-                    && let Some(bpm) = track.current_bpm(&self.library)
-                    && let Some(bpm_str) = track.bpm_display(&self.library)
-                    && right.starts_with(&bpm_str)
-                {
-                    let bpm_style = ColorStyle::new(tempo_color(bpm), style.back);
-                    printer.with_color(bpm_style, |printer| {
-                        printer.print((offset, 0), &bpm_str);
-                    });
-                }
             }
         });
     }

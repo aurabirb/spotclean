@@ -203,7 +203,11 @@ impl ListItem for Track {
         if left != default {
             Playable::format(&Playable::Track(self.clone()), &left, library)
         } else {
-            format!("{self}")
+            // BPM leads so ListView can colour that prefix, then artists - title.
+            match self.bpm_display(library) {
+                Some(bpm) => format!("{bpm} {self}"),
+                None => format!("{self}"),
+            }
         }
     }
 
@@ -239,17 +243,11 @@ impl ListItem for Track {
                 Some(SortStatus::Sorted(keys)) => keys.join(","),
                 Some(SortStatus::Unsorted) | Some(SortStatus::Unavailable) | None => String::new(),
             };
-            // BPM leads so ListView can colour that prefix; then the sorted-into keys; then
-            // duration. Any empty segment is dropped so the spacing stays tidy.
-            [
-                self.bpm_display(library).unwrap_or_default(),
-                sorted,
-                self.duration_str(),
-            ]
-            .into_iter()
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ")
+            if sorted.is_empty() {
+                self.duration_str()
+            } else {
+                format!("{sorted} {}", self.duration_str())
+            }
         }
     }
 

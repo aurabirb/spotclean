@@ -392,9 +392,10 @@ Available options for tracks: `%artists`, `%artist`, `%title`, `%album`,
 `%duration`, `%bpm`, `%sorted`.
 `%artists` will show all contributing artists, while `%artist` only shows the first listed artist.
 `%bpm` is empty until [`enrich_metadata`](#configuration) has detected it for a
-track (see that option for how detection is scheduled and throttled). In the
-default `right` column the BPM number is drawn in a tempo-dependent colour -
-teal for slow, amber in the middle, red for fast.
+track (see that option for how detection is scheduled and throttled). When it
+leads a column, the BPM number is drawn in a tempo-dependent colour - teal for
+slow, amber in the middle, red for fast; by default it sits before the track
+name in the `left` column.
 `%sorted` shows the key(s) it's filed under if the track has already been filed into one or more
 of the playlists bound to a key (see [custom keybindings](#custom-keybindings) and the `bindkey`
 command), joined with a comma if more than one applies, and nothing otherwise (whether it just
@@ -410,9 +411,9 @@ Default configuration:
 statusbar_format = "%artists - %title"
 
 [track_format]
-left = "%artists - %title"
+left = "%bpm %artists - %title"
 center = "%album"
-right = "%bpm %sorted %duration"
+right = "%sorted %duration"
 ```
 
 <details>
