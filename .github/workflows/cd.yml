@@ -9,6 +9,9 @@ env:
   CARGO_TERM_COLOR: always
   TERM: xterm
 
+permissions:
+  contents: write
+
 jobs:
   publish:
     name: Publishing ${{ matrix.build_target }}
