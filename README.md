@@ -124,6 +124,37 @@ NCSPOT_BPM_FILE=song.mp3 cargo test --bin ncspot -- --ignored --nocapture analys
 Set `NCSPOT_BPM_DEBUG=1` as well to print the per-window estimates and the
 octave-resolution scoring.
 
+## Prebuilt binaries
+
+Tagged releases (`vX.Y.Z`) attach a plain, ready-to-run `ncspot` binary for each
+platform on the [Releases page], alongside a `.sha256` checksum:
+
+- `ncspot-vX.Y.Z-linux-x86_64`
+- `ncspot-vX.Y.Z-linux-arm64`
+- `ncspot-vX.Y.Z-macos-x86_64`
+- `ncspot-vX.Y.Z-macos-aarch64`
+
+Download the one for your platform, verify it, then make it executable:
+
+```sh
+shasum -a 256 -c ncspot-vX.Y.Z-<platform>.sha256
+chmod +x ncspot-vX.Y.Z-<platform>
+mv ncspot-vX.Y.Z-<platform> ~/.local/bin/ncspot   # or anywhere on your PATH
+```
+
+### macOS: unsigned binaries
+
+These builds are **not code-signed or notarized**. macOS Gatekeeper will refuse
+to run them until you clear the quarantine attribute:
+
+```sh
+xattr -d com.apple.quarantine ./ncspot-vX.Y.Z-macos-aarch64   # or: xattr -cr <file>
+```
+
+Alternatively, right-click the binary in Finder → Open → confirm the dialog once.
+
+[Releases page]: https://github.com/aurabirb/spotclean/releases
+
 ## Build & run
 
 This fork isn't packaged anywhere — you build it from source.
