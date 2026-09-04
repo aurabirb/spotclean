@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::bpm::{BpmOutcome, detect_bpm};
+use crate::bpm::{BpmOutcome, ScanOptions, detect_bpm};
 use crate::config::Config;
 use crate::events::EventManager;
 use crate::liked_songs::LikedSongs;
@@ -306,7 +306,7 @@ impl BpmScanner {
             };
 
             if let Some((idx, track)) = next {
-                self.analyze(&track, false);
+                self.analyze(&track, self.cdn_scan_options());
                 cursor = idx + 1;
                 idle_passes = 0;
                 last_fetch = Some(Instant::now());
@@ -359,7 +359,13 @@ impl BpmScanner {
         // While playback is still filling the cache, insist on reading from it; only once the
         // grace period has lapsed (playback long since moved on or stopped) fall back to a direct
         // fetch, which by then isn't competing with playback for the CDN.
-        let outcome = self.analyze(&track, !grace_elapsed);
+        let outcome = self.analyze(
+            &track,
+            ScanOptions {
+                require_cached: !grace_elapsed,
+                ..self.cdn_scan_options()
+            },
+        );
 
         let mut guard = self.inner.playing.lock().unwrap();
         // A newer track may have replaced this one while detection was running.
@@ -378,14 +384,30 @@ impl BpmScanner {
         true
     }
 
+    /// CDN-fetch options shared by both scan paths: when `bpm_scan_cache_full` is set, request the
+    /// player's configured bitrate and download the whole file so librespot caches it for
+    /// playback. `require_cached` is filled in per call site.
+    fn cdn_scan_options(&self) -> ScanOptions {
+        let values = self.inner.cfg.values();
+        if values.bpm_scan_cache_full.unwrap_or(false) {
+            ScanOptions {
+                require_cached: false,
+                bitrate: Some(values.bitrate.unwrap_or(320)),
+                cache_full: true,
+            }
+        } else {
+            ScanOptions::default()
+        }
+    }
+
     /// Detect `track`'s BPM and store it, returning the outcome. No-op if it's already settled.
     ///
-    /// With `require_cached` set, only the audio cache is consulted - a miss is
+    /// With `opts.require_cached` set, only the audio cache is consulted - a miss is
     /// [`BpmOutcome::Unavailable`] and doesn't count against [`MAX_DETECT_ATTEMPTS`], since the
     /// audio may simply not have been downloaded yet. A failed *fetch* ([`BpmOutcome::Unavailable`]
     /// without `require_cached`) and a ran-but-empty analysis ([`BpmOutcome::Indeterminate`]) both
     /// count. A missing session never counts.
-    fn analyze(&self, track: &Track, require_cached: bool) -> BpmOutcome {
+    fn analyze(&self, track: &Track, opts: ScanOptions) -> BpmOutcome {
         let Some(track_id) = track.id.clone() else {
             return BpmOutcome::Unavailable;
         };
@@ -399,8 +421,9 @@ impl BpmScanner {
             return BpmOutcome::Unavailable;
         };
 
+        let require_cached = opts.require_cached;
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            detect_bpm(&session, track, require_cached)
+            detect_bpm(&session, track, opts)
         }))
         .unwrap_or(BpmOutcome::Unavailable);
 

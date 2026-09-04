@@ -90,16 +90,28 @@ pub enum BpmOutcome {
     Unavailable,
 }
 
+/// How to fetch a track's audio for BPM analysis.
+#[derive(Clone, Copy, Default)]
+pub struct ScanOptions {
+    /// Only analyze when one of the track's Ogg files is already in librespot's on-disk audio
+    /// cache; otherwise return [`BpmOutcome::Unavailable`] rather than touching the CDN. Used for
+    /// the track that's currently playing - playback is filling that cache anyway, and a
+    /// competing CDN fetch can be rate-limited into a stall.
+    pub require_cached: bool,
+    /// Preferred bitrate (kbps: 96 / 160 / 320) to request from the CDN, so the fetched file
+    /// matches what the player would download and is reusable for playback. `None` picks the
+    /// smallest available file, to keep the download light.
+    pub bitrate: Option<u32>,
+    /// After analysis, keep downloading the file to completion so librespot commits it to the
+    /// audio cache for later offline playback. Only meaningful together with a `bitrate` that
+    /// matches the player's.
+    pub cache_full: bool,
+}
+
 /// Detect `track`'s BPM from its audio. Blocking and moderately CPU-heavy (a Vorbis decode of
-/// ~1 minute of audio plus a batch of FFTs) - call it from a background worker, never the UI
-/// thread.
-///
-/// With `require_cached` set, the analysis only runs when one of the track's Ogg files is
-/// already in librespot's on-disk audio cache; otherwise it returns [`BpmOutcome::Unavailable`]
-/// rather than pulling the bytes from the CDN. Use it for the track that's currently playing:
-/// playback is filling that cache anyway, and a competing CDN fetch can be rate-limited into a
-/// stall.
-pub fn detect_bpm(session: &Session, track: &Track, require_cached: bool) -> BpmOutcome {
+/// ~1 minute of audio plus a batch of FFTs - or of the whole track with
+/// [`ScanOptions::cache_full`]) - call it from a background worker, never the UI thread.
+pub fn detect_bpm(session: &Session, track: &Track, opts: ScanOptions) -> BpmOutcome {
     let Ok(uri) = SpotifyUri::from_uri(&track.uri) else {
         return BpmOutcome::Unavailable;
     };
@@ -107,8 +119,7 @@ pub fn detect_bpm(session: &Session, track: &Track, require_cached: bool) -> Bpm
         return BpmOutcome::Unavailable;
     };
 
-    let Some((source, length)) =
-        runtime.block_on(open_audio_stream(session, uri, require_cached))
+    let Some((source, length, from_cache)) = runtime.block_on(open_audio_stream(session, uri, opts))
     else {
         return BpmOutcome::Unavailable;
     };
@@ -118,7 +129,11 @@ pub fn detect_bpm(session: &Session, track: &Track, require_cached: bool) -> Bpm
         return BpmOutcome::Unavailable;
     };
 
-    let Some(mono) = decode_mono(subfile) else {
+    // With `cache_full`, read the decoder to the end after the analysis window so librespot's
+    // fetcher pulls every byte and commits the finished file to its audio cache. Pointless when
+    // the file was already served from that cache (it's necessarily complete).
+    let drain = opts.cache_full && !from_cache;
+    let Some(mono) = decode_mono(subfile, drain) else {
         return BpmOutcome::Unavailable;
     };
     let onset = onset_envelope(&mono);
@@ -139,11 +154,20 @@ const OGG_FORMATS: [AudioFileFormat; 3] = [
 
 /// Resolve `uri` to a playable Ogg Vorbis file and return its decrypting reader plus the file's
 /// total length. Mirrors `PlayerTrackLoader::load_remote_track`, minus everything playback-specific.
+/// The Ogg Vorbis format closest to (and not exceeding) `kbps`.
+fn format_for_bitrate(kbps: u32) -> AudioFileFormat {
+    match kbps {
+        0..=96 => AudioFileFormat::OGG_VORBIS_96,
+        97..=160 => AudioFileFormat::OGG_VORBIS_160,
+        _ => AudioFileFormat::OGG_VORBIS_320,
+    }
+}
+
 async fn open_audio_stream(
     session: &Session,
     uri: SpotifyUri,
-    require_cached: bool,
-) -> Option<(AudioDecrypt<AudioFile>, u64)> {
+    opts: ScanOptions,
+) -> Option<(AudioDecrypt<AudioFile>, u64, bool)> {
     // The audio key is requested for the *original* track id even when playback falls back to an
     // alternative (region-relinked) file - same as librespot.
     let track_id: SpotifyId = (&uri).try_into().ok()?;
@@ -169,22 +193,29 @@ async fn open_audio_stream(
     let (format, file_id) = match cached {
         Some(hit) => hit,
         // Nothing cached: for the playing track we wait for playback to fill the cache rather
-        // than race it to the CDN; otherwise fall back to the smallest file to keep it light.
-        None if require_cached => return None,
-        None => available().next()?,
+        // than race it to the CDN.
+        None if opts.require_cached => return None,
+        // Otherwise take the caller's preferred bitrate if that file exists, falling back to the
+        // smallest available so an unhinted scan stays light.
+        None => opts
+            .bitrate
+            .map(format_for_bitrate)
+            .and_then(|want| available().find(|(f, _)| *f == want))
+            .or_else(|| available().next())?,
     };
 
     let bytes_per_second = stream_data_rate(format);
     let encrypted = AudioFile::open(session, file_id, bytes_per_second)
         .await
         .ok()?;
+    let from_cache = matches!(encrypted, AudioFile::Cached(_));
     let length = encrypted.get_stream_loader_controller().ok()?.len() as u64;
 
     // Some files aren't encrypted; if the key request fails, continue undecrypted and let the
     // decoder bail if it turns out the data really was scrambled (same policy as librespot).
     let key = session.audio_key().request(track_id, file_id).await.ok();
 
-    Some((AudioDecrypt::new(key, encrypted), length))
+    Some((AudioDecrypt::new(key, encrypted), length, from_cache))
 }
 
 /// A track is playable as-is if it has files and is available; otherwise follow its alternatives
@@ -220,15 +251,22 @@ fn stream_data_rate(format: AudioFileFormat) -> usize {
     (kbps * 1024.0_f32).ceil() as usize
 }
 
-/// Decode the stream to a mono f32 signal, stopping after [`ANALYSIS_SAMPLES`].
-fn decode_mono<R: MediaSource + 'static>(source: R) -> Option<Vec<f32>> {
+/// Decode the stream to a mono f32 signal, keeping only the first [`ANALYSIS_SAMPLES`].
+///
+/// With `drain`, decoding continues past the analysis window to the end of the stream (samples
+/// discarded). This forces librespot's fetcher to download every byte, which is what makes it
+/// commit the completed file to the audio cache - use it to pre-cache a track for playback.
+fn decode_mono<R: MediaSource + 'static>(source: R, drain: bool) -> Option<Vec<f32>> {
     let mut hint = Hint::new();
     hint.mime_type("audio/ogg");
 
     let mut decoder = SymphoniaDecoder::new(source, hint).ok()?;
     let mut mono = Vec::with_capacity(ANALYSIS_SAMPLES);
 
-    while mono.len() < ANALYSIS_SAMPLES {
+    loop {
+        if mono.len() >= ANALYSIS_SAMPLES && !drain {
+            break;
+        }
         let Ok(Some((_, packet))) = decoder.next_packet() else {
             break;
         };
@@ -236,6 +274,9 @@ fn decode_mono<R: MediaSource + 'static>(source: R) -> Option<Vec<f32>> {
         let AudioPacket::Samples(samples) = packet else {
             break;
         };
+        if mono.len() >= ANALYSIS_SAMPLES {
+            continue; // draining: pull the rest of the file but stop collecting
+        }
         let (frames, _) = samples.as_chunks::<2>();
         for frame in frames {
             mono.push(((frame[0] + frame[1]) * 0.5) as f32);

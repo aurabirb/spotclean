@@ -280,6 +280,7 @@ Possible configuration values are:
 | `bpm_scan_min_interval_secs`    | Minimum seconds between two BPM audio fetches, so bulk scanning doesn't trip Spotify's rate limiter (which would block playback). | any integer | `15`                |
 | `bpm_scan_full_library`         | Have the BPM scanner load more of the Liked Songs list as it walks past the loaded end, and wrap to the front when done - so left running it detects the BPM of the whole library. Set `false` to have it stop at the end of what you've scrolled into view. | `true`, `false` | `true`              |
 | `bpm_scan_enabled`              | Starting state of the background BPM walk. Toggle it at runtime with `togglebpmscan` (<kbd>Shift</kbd>+<kbd>t</kbd>). The playing track is analyzed regardless. | `true`, `false` | `true`              |
+| `bpm_scan_cache_full`           | Have the BPM scanner fetch each track at your configured `bitrate` and download it *in full*, so librespot caches it for offline playback. Turns the scan into a whole-library download (many GB of CDN traffic) and is much more likely to trip Spotify's rate limiter - raise `bpm_scan_min_interval_secs` if you use it. | `true`, `false` | `false`             |
 
 1. If built with the `cover` feature.
 2. By default the statusbar will show a play icon when a track is playing and
