@@ -129,30 +129,45 @@ octave-resolution scoring.
 
 ## Prebuilt binaries
 
-Tagged releases (`vX.Y.Z`) attach a plain, ready-to-run `ncspot` binary for each
-platform on the [Releases page], alongside a `.sha256` checksum:
+Tagged releases attach a plain, ready-to-run `ncspot` binary for each platform on
+the [Releases page]. The current release is **v1.4.0-aura1**. Pick your platform
+and run one block:
 
-- `ncspot-vX.Y.Z-linux-x86_64`
-- `ncspot-vX.Y.Z-linux-arm64`
-- `ncspot-vX.Y.Z-macos-x86_64`
-- `ncspot-vX.Y.Z-macos-aarch64`
-
-Download the one for your platform, verify it, then make it executable:
+**Linux x86_64:**
 
 ```sh
-shasum -a 256 -c ncspot-vX.Y.Z-<platform>.sha256
-chmod +x ncspot-vX.Y.Z-<platform>
-mv ncspot-vX.Y.Z-<platform> ~/.local/bin/ncspot   # or anywhere on your PATH
+curl -L -o ncspot https://github.com/aurabirb/spotclean/releases/download/v1.4.0-aura1/ncspot-v1.4.0-aura1-linux-x86_64
+chmod +x ncspot && mkdir -p ~/.local/bin && mv ncspot ~/.local/bin/ncspot
 ```
+
+**Linux arm64:**
+
+```sh
+curl -L -o ncspot https://github.com/aurabirb/spotclean/releases/download/v1.4.0-aura1/ncspot-v1.4.0-aura1-linux-arm64
+chmod +x ncspot && mkdir -p ~/.local/bin && mv ncspot ~/.local/bin/ncspot
+```
+
+**macOS Apple Silicon:**
+
+```sh
+curl -L -o ncspot https://github.com/aurabirb/spotclean/releases/download/v1.4.0-aura1/ncspot-v1.4.0-aura1-macos-aarch64
+chmod +x ncspot && xattr -d com.apple.quarantine ./ncspot && mkdir -p ~/.local/bin && mv ncspot ~/.local/bin/ncspot
+```
+
+**macOS Intel:**
+
+```sh
+curl -L -o ncspot https://github.com/aurabirb/spotclean/releases/download/v1.4.0-aura1/ncspot-v1.4.0-aura1-macos-x86_64
+chmod +x ncspot && xattr -d com.apple.quarantine ./ncspot && mkdir -p ~/.local/bin && mv ncspot ~/.local/bin/ncspot
+```
+
+Make sure `~/.local/bin` is on your `PATH`.
 
 ### macOS: unsigned binaries
 
-These builds are **not code-signed or notarized**. macOS Gatekeeper will refuse
-to run them until you clear the quarantine attribute:
-
-```sh
-xattr -d com.apple.quarantine ./ncspot-vX.Y.Z-macos-aarch64   # or: xattr -cr <file>
-```
+These builds are **not code-signed or notarized**, so the macOS blocks are
+cleared with `xattr -d com.apple.quarantine ./ncspot` (already in the commands
+above; use `xattr -cr ./ncspot` if that complains).
 
 Alternatively, right-click the binary in Finder → Open → confirm the dialog once.
 
